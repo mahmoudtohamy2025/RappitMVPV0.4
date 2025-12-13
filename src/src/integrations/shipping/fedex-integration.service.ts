@@ -277,7 +277,7 @@ export class FedExIntegrationService {
 
       const payload: FedExCancelShipmentRequest = {
         accountNumber: {
-          value: credentials.accountNumber || process.env.FEDEX_ACCOUNT_NUMBER!,
+          value: credentials.accountNumber,
         },
         trackingNumber,
       };
@@ -318,7 +318,7 @@ export class FedExIntegrationService {
 
       const payload: FedExRateQuoteRequest = {
         accountNumber: {
-          value: credentials.accountNumber || process.env.FEDEX_ACCOUNT_NUMBER!,
+          value: credentials.accountNumber,
         },
         requestedShipment: {
           shipper: {
@@ -513,7 +513,9 @@ startxref
    * Build FedEx create shipment API payload
    */
   private buildCreateShipmentPayload(request: FedExShipmentRequest): FedExCreateShipmentRequest {
-    const credentials = this.getCredentials(request.accountNumber);
+    const credentials = {
+      accountNumber: request.accountNumber,
+    };
 
     // Get shipper info from environment or request
     const shipperInfo = {
@@ -568,7 +570,7 @@ startxref
           payor: {
             responsibleParty: {
               accountNumber: {
-                value: process.env.FEDEX_SHIPPER_ACCOUNT || credentials.accountNumber,
+                value: credentials.accountNumber,
               },
             },
           },
@@ -721,15 +723,18 @@ startxref
   // HELPER METHODS
   // ============================================================================
 
-  private getCredentials(accountNumber: string): {
+  private getCredentials(shippingAccount: any): {
     apiKey: string;
     secretKey: string;
     accountNumber: string;
   } {
+    // Try to get from shipping account credentials first, fallback to env vars
+    const accountCreds = shippingAccount.credentials || {};
+    
     return {
-      apiKey: process.env.FEDEX_API_KEY!,
-      secretKey: process.env.FEDEX_SECRET_KEY!,
-      accountNumber: process.env.FEDEX_ACCOUNT_NUMBER || accountNumber,
+      apiKey: accountCreds.apiKey || process.env.FEDEX_API_KEY!,
+      secretKey: accountCreds.secretKey || process.env.FEDEX_SECRET_KEY!,
+      accountNumber: accountCreds.accountNumber || shippingAccount.accountNumber || process.env.FEDEX_ACCOUNT_NUMBER!,
     };
   }
 

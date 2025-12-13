@@ -9,7 +9,7 @@
  * - Error normalization with FedEx-specific error codes
  */
 
-import { IntegrationType } from '@prisma/client';
+import { IntegrationType, LogDirection } from '@prisma/client';
 import { IntegrationLoggingService } from '@services/integration-logging.service';
 import { createLogger, StructuredLogger } from '@utils/structured-logger';
 import {
@@ -460,7 +460,7 @@ export class FedExClient {
       await this.integrationLogging.logIntegrationCall({
         organizationId: this.config.organizationId,
         integrationType: IntegrationType.FEDEX,
-        direction: 'OUTBOUND',
+        direction: LogDirection.OUTBOUND,
         endpoint,
         method,
         request,
