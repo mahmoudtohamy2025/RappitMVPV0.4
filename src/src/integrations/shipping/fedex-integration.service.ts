@@ -513,9 +513,6 @@ startxref
    * Build FedEx create shipment API payload
    */
   private buildCreateShipmentPayload(request: FedExShipmentRequest): FedExCreateShipmentRequest {
-    const credentials = {
-      accountNumber: request.accountNumber,
-    };
 
     // Get shipper info from environment or request
     const shipperInfo = {
@@ -570,7 +567,7 @@ startxref
           payor: {
             responsibleParty: {
               accountNumber: {
-                value: credentials.accountNumber,
+                value: request.accountNumber,
               },
             },
           },
@@ -596,7 +593,7 @@ startxref
         })),
       },
       accountNumber: {
-        value: credentials.accountNumber,
+        value: request.accountNumber,
       },
     };
 

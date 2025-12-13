@@ -33,17 +33,22 @@ export function mapCarrierStatusToInternal(
 }
 
 /**
+ * Terminal statuses - no further updates expected
+ */
+const TERMINAL_STATUSES = [
+  ShipmentStatus.DELIVERED,
+  ShipmentStatus.CANCELLED,
+  ShipmentStatus.RETURNED,
+];
+
+/**
  * Check if status is terminal (no further updates expected)
  * 
  * @param status - Internal ShipmentStatus
  * @returns True if status is terminal
  */
 export function isTerminalStatus(status: ShipmentStatus): boolean {
-  return (
-    status === ShipmentStatus.DELIVERED ||
-    status === ShipmentStatus.CANCELLED ||
-    status === ShipmentStatus.RETURNED
-  );
+  return TERMINAL_STATUSES.includes(status);
 }
 
 /**
@@ -106,9 +111,5 @@ function mapDHLStatusToInternal(dhlStatus: string): ShipmentStatus {
 
 function isDHLStatusTerminal(dhlStatus: string): boolean {
   const status = DHL_STATUS_MAPPING[dhlStatus];
-  return (
-    status === ShipmentStatus.DELIVERED ||
-    status === ShipmentStatus.CANCELLED ||
-    status === ShipmentStatus.RETURNED
-  );
+  return isTerminalStatus(status);
 }
