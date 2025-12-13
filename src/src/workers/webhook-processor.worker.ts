@@ -126,42 +126,37 @@ export class WebhookProcessorWorker extends BaseWorker<WebhookJobData> {
 
   /**
    * Process Shopify order create/update webhook
+   * 
+   * Note: This method requires proper service injection to work.
+   * The webhook processor worker needs to be refactored to accept
+   * ShopifyIntegrationService and OrdersService via constructor.
+   * 
+   * For now, this is a placeholder that logs the webhook event.
+   * The actual order processing can be triggered via the sync worker
+   * by scheduling an immediate order sync job.
    */
   private async processShopifyOrder(
     channelId: string,
     organizationId: string,
     payload: any,
   ): Promise<void> {
-    this.logger.log(`Processing Shopify order: ${payload.id}`);
+    this.logger.log(`Processing Shopify order webhook: ${payload.id}`);
 
-    // Initialize Shopify service (will be injected later via constructor)
-    const { ShopifyIntegrationService } = await import('../integrations/shopify/shopify-integration.service');
-    const { ShopifyClient } = await import('../integrations/shopify/shopify-client');
-    const { PrismaService } = await import('@common/database/prisma.service');
-    const { ConfigService } = await import('@nestjs/config');
-    const { IntegrationLoggingService } = await import('@services/integration-logging.service');
-    const { OrdersService } = await import('@modules/orders/orders.service');
-    const { InventoryService } = await import('@modules/inventory/inventory.service');
-    const { ActorType } = await import('@common/enums/actor-type.enum');
+    // TODO: Implement proper service injection pattern
+    // Workflow:
+    // 1. Inject ShopifyIntegrationService and OrdersService via constructor
+    // 2. Map external order to internal DTO:
+    //    const orderDto = await shopifyService.mapExternalOrderToInternal(channelId, payload);
+    // 3. Create or update order:
+    //    await ordersService.createOrUpdateOrderFromChannelPayload(
+    //      orderDto, organizationId, ActorType.CHANNEL, channelId
+    //    );
+    // 4. Inventory reservation happens automatically in OrdersService
 
-    // This is a temporary workaround - ideally services should be injected via constructor
-    // For now, we'll use a global service instance or pass it through job data
-    
-    // 1. Map external order to internal DTO
-    // const orderDto = await shopifyService.mapExternalOrderToInternal(channelId, payload);
-    // 
-    // 2. Create or update order
-    // const order = await ordersService.createOrUpdateOrderFromChannelPayload(
-    //   orderDto,
-    //   organizationId,
-    //   ActorType.CHANNEL,
-    //   channelId,
-    // );
-    // 
-    // 3. If order is paid, reserve inventory (already handled by OrdersService)
-
-    this.logger.debug(`Shopify order webhook received: ${payload.id}`);
-    this.logger.warn('Shopify order processing not yet fully implemented in webhook worker');
+    this.logger.warn(
+      `Shopify order webhook received but processing not fully implemented. ` +
+      `Consider triggering immediate order sync for channel ${channelId}`,
+    );
   }
 
   /**

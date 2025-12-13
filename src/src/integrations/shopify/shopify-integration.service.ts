@@ -211,7 +211,7 @@ export class ShopifyIntegrationService {
    */
   async mapExternalOrderToInternal(
     channelId: string,
-    externalOrder: any,
+    externalOrder: ShopifyOrder,
   ): Promise<CreateOrderFromChannelDto> {
     this.logger.log(`Mapping Shopify order ${externalOrder.id} to internal format`);
 
@@ -247,7 +247,7 @@ export class ShopifyIntegrationService {
       street1: 'No address provided',
       city: 'Unknown',
       postalCode: '00000',
-      country: 'SA', // Default to Saudi Arabia
+      country: 'US', // Default fallback
     };
 
     // Map billing address
@@ -267,18 +267,27 @@ export class ShopifyIntegrationService {
     // Map line items
     const items = await Promise.all(
       externalOrder.line_items.map(async (item: any) => {
-        // Find internal SKU by Shopify variant ID
-        const sku = await this.findSkuByShopifyVariantId(item.variant_id, channel.organizationId);
+        let skuCode: string;
+        let skuRecord: { sku: string; id: string } | null = null;
 
-        if (!sku) {
+        // Only look up by variant_id if it's provided
+        if (item.variant_id) {
+          skuRecord = await this.findSkuByShopifyVariantId(item.variant_id, channel.organizationId);
+        }
+
+        if (skuRecord) {
+          skuCode = skuRecord.sku;
+        } else {
+          // Fallback: use item SKU or generate one
+          skuCode = item.sku || `SHOPIFY-${item.variant_id || item.id}`;
           this.logger.warn(
-            `SKU not found for Shopify variant ${item.variant_id}. Order ${externalOrder.id} may fail to import.`,
+            `SKU not found for Shopify variant ${item.variant_id}. Using fallback SKU: ${skuCode}`,
           );
         }
 
         return {
           externalItemId: item.id.toString(),
-          sku: sku?.sku || item.sku || `SHOPIFY-${item.variant_id}`,
+          sku: skuCode,
           name: item.name,
           variantName: item.variant_title !== 'Default Title' ? item.variant_title : undefined,
           quantity: item.quantity,

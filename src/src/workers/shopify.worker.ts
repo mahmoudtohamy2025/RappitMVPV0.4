@@ -7,7 +7,6 @@ import { ShopifyClient } from '../integrations/shopify/shopify-client';
 import { ConfigService } from '@nestjs/config';
 import { IntegrationLoggingService } from '@services/integration-logging.service';
 import { OrdersService } from '@modules/orders/orders.service';
-import { InventoryService } from '@modules/inventory/inventory.service';
 
 /**
  * Shopify Worker
@@ -35,7 +34,6 @@ export class ShopifyWorker extends BaseWorker<ShopifySyncJobData> {
     configService: ConfigService,
     integrationLoggingService: IntegrationLoggingService,
     ordersService: OrdersService,
-    inventoryService: InventoryService,
   ) {
     super(QueueName.SHOPIFY_SYNC, 'ShopifyWorker', {
       concurrency: 3, // Process 3 Shopify jobs concurrently
@@ -173,14 +171,12 @@ export async function startShopifyWorker(
   configService: ConfigService,
   integrationLoggingService: IntegrationLoggingService,
   ordersService: OrdersService,
-  inventoryService: InventoryService,
 ): Promise<ShopifyWorker> {
   const worker = new ShopifyWorker(
     prisma,
     configService,
     integrationLoggingService,
     ordersService,
-    inventoryService,
   );
   await worker.start();
   return worker;
