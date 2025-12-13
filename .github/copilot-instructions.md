@@ -6,8 +6,10 @@ Rappit is a production-ready, multi-tenant SaaS operations hub for MENA e-commer
 
 ### Architecture
 
-- **Frontend**: React 18 + Next.js 14 + TypeScript + Vite
-- **Backend**: NestJS + TypeScript + Express
+This project has two frontend implementations:
+- **Primary UI**: React 18 + Vite + TypeScript (root level, port 3000)
+- **Next.js Frontend**: Next.js 14 + TypeScript (src/next-app/, for SSR features)
+- **Backend**: NestJS + TypeScript + Express (src/src/, default port 3000)
 - **Database**: PostgreSQL + Prisma ORM
 - **Queue System**: BullMQ + Redis
 - **Testing**: Jest (unit/integration) + Playwright (e2e)
@@ -100,15 +102,20 @@ The inventory system uses **Model C** (reserve-on-order, deduct-on-ship):
 - **Encrypted Credentials**: Store API keys encrypted in `Channel.config` JSON field
 - **SKU Mapping**: Products from external channels mapped via `UnmappedItem` and `ChannelMapping`
 
-### React/Next.js Frontend
+### React/Vite Frontend (Primary)
 
-- **Server Components**: Use Next.js server components by default
-- **Client Components**: Mark with `'use client'` only when necessary
+- **Component Pattern**: Functional components with React hooks
 - **RTL Support**: UI supports right-to-left (Arabic) layout
 - **Shadcn/ui Pattern**: UI components follow shadcn/ui conventions
 - **State Management**: Use TanStack Query for server state
 - **Forms**: Use `react-hook-form` for form handling
 - **Styling**: Use Tailwind CSS utilities; avoid inline styles
+
+### Next.js Frontend (Secondary, src/next-app/)
+
+- **Usage**: Used for specific features requiring SSR
+- **Client Components**: Mark with `'use client'` when needed for interactivity
+- **Middleware**: Custom authentication middleware for route protection
 
 ### Testing Conventions
 
@@ -121,18 +128,29 @@ The inventory system uses **Model C** (reserve-on-order, deduct-on-ship):
 
 ## Development Commands
 
-### Frontend (Vite)
+### Primary Frontend (Root - Vite)
 ```bash
 npm run dev          # Start Vite dev server (port 3000)
 npm run build        # Build for production
 ```
 
-### Backend (NestJS)
+### Next.js Frontend (src/next-app/)
 ```bash
+cd src/next-app
+npm run dev          # Start Next.js dev server
+npm run build        # Build for production
+npm run start        # Start production server
+```
+
+### Backend (NestJS - src/src/)
+```bash
+cd src
 npm run start:dev    # Start NestJS in watch mode
 npm run build        # Compile TypeScript
 npm run start:prod   # Run production build
 ```
+
+**Note**: Backend defaults to port 3000 but can be configured via `PORT` environment variable to avoid conflicts with frontend.
 
 ### Database
 ```bash
@@ -181,9 +199,12 @@ docker-compose logs -f    # View logs
 
 ## API Documentation
 
+When running backend on default port 3000:
 - **Swagger UI**: http://localhost:3000/api/docs
 - **API Base URL**: http://localhost:3000/api/v1
 - **Health Check**: http://localhost:3000/api/v1/health
+
+**Note**: Configure different ports for frontend and backend via environment variables to avoid conflicts.
 
 ## File Structure
 
