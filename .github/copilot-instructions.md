@@ -9,7 +9,7 @@ Rappit is a production-ready, multi-tenant SaaS operations hub for MENA e-commer
 This project has two frontend implementations:
 - **Primary UI**: React 18 + Vite + TypeScript (root level, port 3000)
 - **Next.js Frontend**: Next.js 14 + TypeScript (src/next-app/, for SSR features)
-- **Backend**: NestJS + TypeScript + Express (src/src/, default port 3000)
+- **Backend**: NestJS + TypeScript + Express (nested in src/src/, default port 3000)
 - **Database**: PostgreSQL + Prisma ORM
 - **Queue System**: BullMQ + Redis
 - **Testing**: Jest (unit/integration) + Playwright (e2e)
@@ -134,20 +134,22 @@ npm run dev          # Start Vite dev server (port 3000)
 npm run build        # Build for production
 ```
 
-### Next.js Frontend (src/next-app/)
+### Alternative Frontend (Next.js)
 ```bash
-cd src/next-app
-npm run dev          # Start Next.js dev server
+# The src directory contains Next.js frontend setup
+cd src
+npm run dev          # Start Next.js dev server (uses src/package.json)
 npm run build        # Build for production
 npm run start        # Start production server
 ```
 
 ### Backend (NestJS - src/src/)
 ```bash
-cd src
-npm run start:dev    # Start NestJS in watch mode
-npm run build        # Compile TypeScript
-npm run start:prod   # Run production build
+# Backend shares dependencies with root package.json
+# Development typically done through Docker or direct execution
+docker-compose up -d         # Start PostgreSQL + Redis
+# Then run the backend with: npm run start:dev (if configured)
+# Or compile and run: npx ts-node src/src/main.ts
 ```
 
 **Note**: Backend defaults to port 3000 but can be configured via `PORT` environment variable to avoid conflicts with frontend.
@@ -209,19 +211,27 @@ When running backend on default port 3000:
 ## File Structure
 
 ```
-/src
-  /common          # Shared utilities, guards, decorators
-  /config          # Configuration files
-  /modules         # Feature modules (auth, orders, inventory, etc.)
-    /integrations  # External integrations (Shopify, WooCommerce, DHL, FedEx)
-  /services        # Business logic services
-  /controllers     # API controllers
-  /prisma          # Database schema and migrations
-  /test            # Unit and integration tests
-  /components      # React components
-  /app             # Next.js app directory
-  /lib             # Frontend utilities
+/ (root)
+  /src               # Main source directory containing both frontend and backend
+    /src/            # NestJS backend source code
+      /common        # Shared utilities, guards, decorators
+      /config        # Configuration files
+      /modules       # Feature modules (auth, orders, inventory, etc.)
+        /integrations  # External integrations (Shopify, WooCommerce, DHL, FedEx)
+      /services      # Business logic services
+      /controllers   # API controllers
+    /prisma          # Database schema and migrations
+    /test            # Backend unit and integration tests
+    /next-app/       # Next.js frontend application
+    /components      # React components (for Next.js frontend)
+    /app             # Next.js app directory
+    /lib             # Frontend utilities
+  /App.tsx           # Root Vite React app entry
+  /components/       # Vite React UI components
+  /vite.config.ts    # Vite configuration for primary UI
 ```
+
+**Note**: The project has a nested structure with `src/src/` containing the NestJS backend code.
 
 ## Getting Started
 
