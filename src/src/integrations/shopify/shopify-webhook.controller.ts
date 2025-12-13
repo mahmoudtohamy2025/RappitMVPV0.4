@@ -11,6 +11,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiHeader } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
 import * as crypto from 'crypto';
 import { PrismaService } from '@common/database/prisma.service';
@@ -37,7 +38,10 @@ import { addJob, QueueName } from '../../queues/queues';
 export class ShopifyWebhookController {
   private readonly logger = new Logger(ShopifyWebhookController.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private configService: ConfigService,
+  ) {}
 
   /**
    * POST /webhooks/shopify/orders/create
@@ -343,18 +347,30 @@ export class ShopifyWebhookController {
   }
 
   /**
-   * Get webhook secret from channel config
+   * Get webhook secret from channel config or environment
+   * 
+   * Priority:
+   * 1. Channel-specific webhook secret in config
+   * 2. Environment SHOPIFY_WEBHOOK_SECRET
+   * 3. Environment SHOPIFY_API_SECRET
    */
   private async getWebhookSecret(shopDomain: string): Promise<string | null> {
     const channel = await this.findChannelByShopDomain(shopDomain);
     
-    if (!channel) {
-      return null;
+    if (channel) {
+      // Try channel-specific secret first
+      const config = channel.config as any;
+      const channelSecret = config.webhookSecret || config.webhook_secret;
+      if (channelSecret) {
+        return channelSecret;
+      }
     }
 
-    // Extract webhook secret from config
-    const config = channel.config as any;
-    return config.webhookSecret || config.webhook_secret || null;
+    // Fallback to environment variables
+    const envSecret = this.configService.get<string>('SHOPIFY_WEBHOOK_SECRET') ||
+                      this.configService.get<string>('SHOPIFY_API_SECRET');
+    
+    return envSecret || null;
   }
 
   /**

@@ -126,29 +126,37 @@ export class WebhookProcessorWorker extends BaseWorker<WebhookJobData> {
 
   /**
    * Process Shopify order create/update webhook
+   * 
+   * Note: This method requires proper service injection to work.
+   * The webhook processor worker needs to be refactored to accept
+   * ShopifyIntegrationService and OrdersService via constructor.
+   * 
+   * For now, this is a placeholder that logs the webhook event.
+   * The actual order processing can be triggered via the sync worker
+   * by scheduling an immediate order sync job.
    */
   private async processShopifyOrder(
     channelId: string,
     organizationId: string,
     payload: any,
   ): Promise<void> {
-    this.logger.log(`Processing Shopify order: ${payload.id}`);
+    this.logger.log(`Processing Shopify order webhook: ${payload.id}`);
 
-    // TODO: Implement in integration service
-    // 1. Map external order to internal DTO
-    // const orderDto = await shopifyService.mapExternalOrderToInternal(channelId, payload);
-    // 
-    // 2. Create or update order
-    // const order = await ordersService.createOrUpdateOrderFromChannelPayload(
-    //   orderDto,
-    //   organizationId,
-    //   ActorType.CHANNEL,
-    //   channelId,
-    // );
-    // 
-    // 3. If order is paid, reserve inventory (already handled by OrdersService)
+    // TODO: Implement proper service injection pattern
+    // Workflow:
+    // 1. Inject ShopifyIntegrationService and OrdersService via constructor
+    // 2. Map external order to internal DTO:
+    //    const orderDto = await shopifyService.mapExternalOrderToInternal(channelId, payload);
+    // 3. Create or update order:
+    //    await ordersService.createOrUpdateOrderFromChannelPayload(
+    //      orderDto, organizationId, ActorType.CHANNEL, channelId
+    //    );
+    // 4. Inventory reservation happens automatically in OrdersService
 
-    this.logger.debug(`Shopify order processed: ${payload.id}`);
+    this.logger.warn(
+      `Shopify order webhook received but processing not fully implemented. ` +
+      `Consider triggering immediate order sync for channel ${channelId}`,
+    );
   }
 
   /**

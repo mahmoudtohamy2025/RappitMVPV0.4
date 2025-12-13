@@ -1,6 +1,25 @@
-import { Injectable, Logger, NotImplementedException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '@common/database/prisma.service';
+import { OrdersService } from '@modules/orders/orders.service';
 import { CreateOrderFromChannelDto } from '@modules/orders/dto/create-order-from-channel.dto';
+import { ActorType } from '@common/enums/actor-type.enum';
+import { ShopifyClient } from './shopify-client';
+import {
+  ShopifyProduct,
+  ShopifyOrder,
+  ShopifyInventoryLevel,
+  ShopifyProductsResponse,
+  ShopifyOrdersResponse,
+  ShopifyInventoryLevelsResponse,
+  CreateShopifyFulfillmentRequest,
+} from './shopify.types';
+import {
+  SHOPIFY_CONFIG,
+  SHOPIFY_PAYMENT_STATUS_MAP,
+  mapShopifyStatusToOrderStatus,
+  SHOPIFY_METADATA_KEYS,
+  SHOPIFY_ERROR_MESSAGES,
+} from './shopify.constants';
 
 /**
  * Shopify Integration Service
@@ -16,7 +35,11 @@ import { CreateOrderFromChannelDto } from '@modules/orders/dto/create-order-from
 export class ShopifyIntegrationService {
   private readonly logger = new Logger(ShopifyIntegrationService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private shopifyClient: ShopifyClient,
+    private ordersService: OrdersService,
+  ) {}
 
   /**
    * Sync products from Shopify
@@ -29,7 +52,7 @@ export class ShopifyIntegrationService {
   async syncProductsForChannel(
     channelId: string,
     sinceTimestamp?: string,
-  ): Promise<void> {
+  ): Promise<{ productsProcessed: number; skusCreated: number }> {
     this.logger.log(
       `Syncing products for channel ${channelId} since ${sinceTimestamp || 'beginning'}`,
     );
@@ -38,24 +61,54 @@ export class ShopifyIntegrationService {
     const channel = await this.getChannel(channelId);
     const { shopDomain, accessToken } = this.extractCredentials(channel.config);
 
-    // Build API URL
-    const url = this.buildApiUrl(shopDomain, '/admin/api/2024-01/products.json', {
-      updated_at_min: sinceTimestamp,
-      limit: '250',
-    });
+    // Build client config
+    const clientConfig = {
+      shopDomain,
+      accessToken,
+      organizationId: channel.organizationId,
+      channelId: channel.id,
+    };
 
-    // Fetch products from Shopify
-    const products = await this.httpGet(url, accessToken);
+    // Build params
+    const params: Record<string, string> = {
+      limit: String(SHOPIFY_CONFIG.PAGINATION_LIMIT),
+    };
+    if (sinceTimestamp) {
+      params.updated_at_min = sinceTimestamp;
+    }
+
+    // Fetch all products (handles pagination)
+    const products = await this.shopifyClient.fetchAllPages<ShopifyProduct>(
+      clientConfig,
+      `/admin/api/${SHOPIFY_CONFIG.API_VERSION}/products.json`,
+      params,
+    );
 
     this.logger.log(`Fetched ${products.length} products from Shopify`);
 
-    // TODO: Map and save products
-    // for (const shopifyProduct of products) {
-    //   await this.mapAndSaveProduct(channelId, channel.organizationId, shopifyProduct);
-    // }
+    let skusCreated = 0;
+
+    // Process each product
+    for (const shopifyProduct of products) {
+      const result = await this.mapAndSaveProduct(
+        channelId,
+        channel.organizationId,
+        shopifyProduct,
+      );
+      skusCreated += result.skusCreated;
+    }
 
     // Update last sync timestamp
     await this.updateChannelLastSync(channelId);
+
+    this.logger.log(
+      `Product sync complete: ${products.length} products, ${skusCreated} SKUs`,
+    );
+
+    return {
+      productsProcessed: products.length,
+      skusCreated,
+    };
   }
 
   /**
@@ -69,7 +122,7 @@ export class ShopifyIntegrationService {
   async syncOrdersForChannel(
     channelId: string,
     sinceTimestamp?: string,
-  ): Promise<void> {
+  ): Promise<{ ordersProcessed: number; ordersFailed: number }> {
     this.logger.log(
       `Syncing orders for channel ${channelId} since ${sinceTimestamp || 'beginning'}`,
     );
@@ -78,30 +131,73 @@ export class ShopifyIntegrationService {
     const channel = await this.getChannel(channelId);
     const { shopDomain, accessToken } = this.extractCredentials(channel.config);
 
-    // Build API URL
-    const url = this.buildApiUrl(shopDomain, '/admin/api/2024-01/orders.json', {
-      created_at_min: sinceTimestamp,
-      status: 'any',
-      limit: '250',
-    });
+    // Build client config
+    const clientConfig = {
+      shopDomain,
+      accessToken,
+      organizationId: channel.organizationId,
+      channelId: channel.id,
+    };
 
-    // Fetch orders from Shopify
-    const orders = await this.httpGet(url, accessToken);
+    // Build params
+    const params: Record<string, string> = {
+      status: 'any',
+      limit: String(SHOPIFY_CONFIG.PAGINATION_LIMIT),
+    };
+    if (sinceTimestamp) {
+      params.updated_at_min = sinceTimestamp;
+    } else if (channel.lastSyncAt) {
+      params.updated_at_min = channel.lastSyncAt.toISOString();
+    }
+
+    // Fetch all orders (handles pagination)
+    const orders = await this.shopifyClient.fetchAllPages<ShopifyOrder>(
+      clientConfig,
+      `/admin/api/${SHOPIFY_CONFIG.API_VERSION}/orders.json`,
+      params,
+    );
 
     this.logger.log(`Fetched ${orders.length} orders from Shopify`);
 
-    // TODO: Process orders
-    // for (const shopifyOrder of orders) {
-    //   const orderDto = await this.mapExternalOrderToInternal(channelId, shopifyOrder);
-    //   await ordersService.createOrUpdateOrderFromChannelPayload(
-    //     orderDto,
-    //     channel.organizationId,
-    //     ActorType.SYSTEM,
-    //   );
-    // }
+    let ordersProcessed = 0;
+    let ordersFailed = 0;
+
+    // Process each order
+    for (const shopifyOrder of orders) {
+      try {
+        const orderDto = await this.mapExternalOrderToInternal(
+          channelId,
+          shopifyOrder,
+        );
+        
+        await this.ordersService.createOrUpdateOrderFromChannelPayload(
+          orderDto,
+          channel.organizationId,
+          ActorType.SYSTEM,
+          channelId,
+        );
+
+        ordersProcessed++;
+      } catch (error) {
+        this.logger.error(
+          `Failed to process Shopify order ${shopifyOrder.id}: ${error.message}`,
+          error.stack,
+        );
+        ordersFailed++;
+      }
+    }
 
     // Update last sync timestamp
     await this.updateChannelLastSync(channelId);
+
+    this.logger.log(
+      `Order sync complete: ${ordersProcessed} succeeded, ${ordersFailed} failed`,
+    );
+
+    return {
+      ordersProcessed,
+      ordersFailed,
+    };
   }
 
   /**
@@ -115,7 +211,7 @@ export class ShopifyIntegrationService {
    */
   async mapExternalOrderToInternal(
     channelId: string,
-    externalOrder: any,
+    externalOrder: ShopifyOrder,
   ): Promise<CreateOrderFromChannelDto> {
     this.logger.log(`Mapping Shopify order ${externalOrder.id} to internal format`);
 
@@ -151,7 +247,7 @@ export class ShopifyIntegrationService {
       street1: 'No address provided',
       city: 'Unknown',
       postalCode: '00000',
-      country: 'SA', // Default to Saudi Arabia
+      country: 'US', // Default fallback
     };
 
     // Map billing address
@@ -171,18 +267,27 @@ export class ShopifyIntegrationService {
     // Map line items
     const items = await Promise.all(
       externalOrder.line_items.map(async (item: any) => {
-        // Find internal SKU by Shopify variant ID
-        const sku = await this.findSkuByShopifyVariantId(item.variant_id, channel.organizationId);
+        let skuCode: string;
+        let skuRecord: { sku: string; id: string } | null = null;
 
-        if (!sku) {
+        // Only look up by variant_id if it's provided
+        if (item.variant_id) {
+          skuRecord = await this.findSkuByShopifyVariantId(item.variant_id, channel.organizationId);
+        }
+
+        if (skuRecord) {
+          skuCode = skuRecord.sku;
+        } else {
+          // Fallback: use item SKU or generate one
+          skuCode = item.sku || `SHOPIFY-${item.variant_id || item.id}`;
           this.logger.warn(
-            `SKU not found for Shopify variant ${item.variant_id}. Order ${externalOrder.id} may fail to import.`,
+            `SKU not found for Shopify variant ${item.variant_id}. Using fallback SKU: ${skuCode}`,
           );
         }
 
         return {
           externalItemId: item.id.toString(),
-          sku: sku?.sku || item.sku || `SHOPIFY-${item.variant_id}`,
+          sku: skuCode,
           name: item.name,
           variantName: item.variant_title !== 'Default Title' ? item.variant_title : undefined,
           quantity: item.quantity,
@@ -237,47 +342,42 @@ export class ShopifyIntegrationService {
   /**
    * Find SKU by Shopify variant ID
    */
-  private async findSkuByShopifyVariantId(
+  async findSkuByShopifyVariantId(
     variantId: number,
     organizationId: string,
-  ): Promise<{ sku: string } | null> {
-    // TODO: Implement SKU lookup by Shopify variant ID
-    // This requires storing Shopify variant ID in SKU metadata
-    
-    // const sku = await this.prisma.sKU.findFirst({
-    //   where: {
-    //     product: {
-    //       organizationId,
-    //     },
-    //     metadata: {
-    //       path: ['shopify_variant_id'],
-    //       equals: variantId,
-    //     },
-    //   },
-    //   select: { sku: true },
-    // });
-    
-    // return sku;
+    channelId?: string,
+  ): Promise<{ sku: string; id: string } | null> {
+    const skuRecord = await this.prisma.sKU.findFirst({
+      where: {
+        product: {
+          organizationId,
+        },
+        metadata: {
+          path: [SHOPIFY_METADATA_KEYS.VARIANT_ID],
+          equals: variantId,
+        },
+      },
+      select: { sku: true, id: true },
+    });
 
-    // Placeholder - return null for now
-    return null;
+    if (!skuRecord) {
+      // Log unmapped item
+      this.logger.warn(
+        `SKU not found for Shopify variant ${variantId} in org ${organizationId}`,
+      );
+      
+      // Note: UnmappedItem creation would happen during order processing
+      // when we have the full context (order ID, item details, etc.)
+    }
+
+    return skuRecord;
   }
 
   /**
    * Map Shopify financial status to payment status
    */
   private mapShopifyFinancialStatus(financialStatus: string): any {
-    const statusMap: Record<string, any> = {
-      'pending': 'PENDING',
-      'authorized': 'AUTHORIZED',
-      'paid': 'PAID',
-      'partially_paid': 'PENDING',
-      'refunded': 'REFUNDED',
-      'voided': 'FAILED',
-      'partially_refunded': 'PARTIALLY_REFUNDED',
-    };
-
-    return statusMap[financialStatus] || 'PENDING';
+    return SHOPIFY_PAYMENT_STATUS_MAP[financialStatus] || 'PENDING';
   }
 
   /**
@@ -310,23 +410,6 @@ export class ShopifyIntegrationService {
   }
 
   /**
-   * Build Shopify API URL
-   */
-  private buildApiUrl(shopDomain: string, path: string, params?: Record<string, string>): string {
-    const url = new URL(`https://${shopDomain}${path}`);
-
-    if (params) {
-      Object.entries(params).forEach(([key, value]) => {
-        if (value) {
-          url.searchParams.append(key, value);
-        }
-      });
-    }
-
-    return url.toString();
-  }
-
-  /**
    * Update channel last sync timestamp
    */
   private async updateChannelLastSync(channelId: string): Promise<void> {
@@ -337,58 +420,206 @@ export class ShopifyIntegrationService {
   }
 
   // ============================================================================
-  // HTTP Methods (Stubs - implement with actual HTTP client)
+  // Additional Sync Methods
   // ============================================================================
 
   /**
-   * HTTP GET request
-   * 
-   * @param url - Full URL
-   * @param accessToken - Shopify access token
-   * @returns Response data
-   * 
-   * TODO: Implement with axios or node-fetch
-   * Use ChannelConnection credentials from database
+   * Sync inventory levels from Shopify
    */
-  protected async httpGet(url: string, accessToken: string): Promise<any> {
-    this.logger.debug(`GET ${url}`);
-    
-    // TODO: Implement actual HTTP request
-    // const response = await axios.get(url, {
-    //   headers: {
-    //     'X-Shopify-Access-Token': accessToken,
-    //     'Content-Type': 'application/json',
-    //   },
-    // });
-    // return response.data.products || response.data.orders || response.data;
+  async syncInventoryLevels(channelId: string): Promise<void> {
+    this.logger.log(`Syncing inventory levels for channel ${channelId}`);
 
-    throw new NotImplementedException('httpGet not implemented - use axios/fetch with Shopify credentials');
+    const channel = await this.getChannel(channelId);
+    const { shopDomain, accessToken } = this.extractCredentials(channel.config);
+
+    const clientConfig = {
+      shopDomain,
+      accessToken,
+      organizationId: channel.organizationId,
+      channelId: channel.id,
+    };
+
+    // Fetch inventory levels
+    const inventoryLevels = await this.shopifyClient.fetchAllPages<ShopifyInventoryLevel>(
+      clientConfig,
+      `/admin/api/${SHOPIFY_CONFIG.API_VERSION}/inventory_levels.json`,
+      { limit: String(SHOPIFY_CONFIG.PAGINATION_LIMIT) },
+    );
+
+    this.logger.log(`Fetched ${inventoryLevels.length} inventory levels`);
+
+    // Update local inventory levels
+    // Note: This is informational only - actual inventory is managed by InventoryService
+    for (const level of inventoryLevels) {
+      // Find SKU by inventory_item_id
+      const sku = await this.prisma.sKU.findFirst({
+        where: {
+          product: { organizationId: channel.organizationId },
+          metadata: {
+            path: [SHOPIFY_METADATA_KEYS.INVENTORY_ITEM_ID],
+            equals: level.inventory_item_id,
+          },
+        },
+      });
+
+      if (sku) {
+        this.logger.debug(
+          `Shopify inventory for SKU ${sku.sku}: ${level.available} available`,
+        );
+        // Could log discrepancies here if needed
+      }
+    }
   }
 
   /**
-   * HTTP POST request
+   * Create fulfillment in Shopify
    */
-  protected async httpPost(url: string, accessToken: string, data: any): Promise<any> {
-    this.logger.debug(`POST ${url}`);
-    
-    throw new NotImplementedException('httpPost not implemented');
+  async createFulfillment(
+    channelId: string,
+    externalOrderId: string,
+    lineItems: Array<{ externalItemId: string; quantity: number }>,
+    trackingNumber?: string,
+    trackingCompany?: string,
+    trackingUrl?: string,
+  ): Promise<void> {
+    this.logger.log(
+      `Creating fulfillment for Shopify order ${externalOrderId}`,
+    );
+
+    const channel = await this.getChannel(channelId);
+    const { shopDomain, accessToken } = this.extractCredentials(channel.config);
+
+    const clientConfig = {
+      shopDomain,
+      accessToken,
+      organizationId: channel.organizationId,
+      channelId: channel.id,
+    };
+
+    // Build fulfillment request
+    const fulfillmentRequest: CreateShopifyFulfillmentRequest = {
+      fulfillment: {
+        notify_customer: true,
+      },
+    };
+
+    // Add tracking info if provided
+    if (trackingNumber || trackingCompany || trackingUrl) {
+      fulfillmentRequest.fulfillment.tracking_info = {
+        number: trackingNumber,
+        company: trackingCompany,
+        url: trackingUrl,
+      };
+    }
+
+    // Create fulfillment
+    await this.shopifyClient.post(
+      clientConfig,
+      `/admin/api/${SHOPIFY_CONFIG.API_VERSION}/orders/${externalOrderId}/fulfillments.json`,
+      fulfillmentRequest,
+    );
+
+    this.logger.log(
+      `Fulfillment created for Shopify order ${externalOrderId}`,
+    );
   }
 
-  /**
-   * HTTP PUT request
-   */
-  protected async httpPut(url: string, accessToken: string, data: any): Promise<any> {
-    this.logger.debug(`PUT ${url}`);
-    
-    throw new NotImplementedException('httpPut not implemented');
-  }
+  // ============================================================================
+  // Helper Methods
+  // ============================================================================
 
   /**
-   * HTTP DELETE request
+   * Map and save Shopify product to internal Product and SKU records
    */
-  protected async httpDelete(url: string, accessToken: string): Promise<any> {
-    this.logger.debug(`DELETE ${url}`);
-    
-    throw new NotImplementedException('httpDelete not implemented');
+  private async mapAndSaveProduct(
+    channelId: string,
+    organizationId: string,
+    shopifyProduct: ShopifyProduct,
+  ): Promise<{ skusCreated: number }> {
+    return this.prisma.$transaction(async (tx) => {
+      // Find existing product by shopify_product_id in metadata
+      let product = await tx.product.findFirst({
+        where: {
+          organizationId,
+          channelId,
+          metadata: {
+            path: [SHOPIFY_METADATA_KEYS.PRODUCT_ID],
+            equals: shopifyProduct.id,
+          },
+        },
+      });
+
+      // Create or update product
+      if (product) {
+        product = await tx.product.update({
+          where: { id: product.id },
+          data: {
+            name: shopifyProduct.title,
+            description: shopifyProduct.body_html,
+            metadata: {
+              [SHOPIFY_METADATA_KEYS.PRODUCT_ID]: shopifyProduct.id,
+              vendor: shopifyProduct.vendor,
+              product_type: shopifyProduct.product_type,
+              tags: shopifyProduct.tags,
+            },
+          },
+        });
+      } else {
+        product = await tx.product.create({
+          data: {
+            organizationId,
+            channelId,
+            name: shopifyProduct.title,
+            description: shopifyProduct.body_html,
+            metadata: {
+              [SHOPIFY_METADATA_KEYS.PRODUCT_ID]: shopifyProduct.id,
+              vendor: shopifyProduct.vendor,
+              product_type: shopifyProduct.product_type,
+              tags: shopifyProduct.tags,
+            },
+          },
+        });
+      }
+
+      let skusCreated = 0;
+
+      // Upsert variants as SKUs
+      for (const variant of shopifyProduct.variants) {
+        const skuCode = variant.sku || `SHOPIFY-${variant.id}`;
+        
+        await tx.sKU.upsert({
+          where: {
+            sku: skuCode,
+          },
+          create: {
+            organizationId,
+            productId: product.id,
+            sku: skuCode,
+            barcode: variant.barcode,
+            metadata: {
+              [SHOPIFY_METADATA_KEYS.VARIANT_ID]: variant.id,
+              [SHOPIFY_METADATA_KEYS.PRODUCT_ID]: shopifyProduct.id,
+              [SHOPIFY_METADATA_KEYS.INVENTORY_ITEM_ID]: variant.inventory_item_id,
+              variant_title: variant.title,
+              price: variant.price,
+            },
+          },
+          update: {
+            barcode: variant.barcode,
+            metadata: {
+              [SHOPIFY_METADATA_KEYS.VARIANT_ID]: variant.id,
+              [SHOPIFY_METADATA_KEYS.PRODUCT_ID]: shopifyProduct.id,
+              [SHOPIFY_METADATA_KEYS.INVENTORY_ITEM_ID]: variant.inventory_item_id,
+              variant_title: variant.title,
+              price: variant.price,
+            },
+          },
+        });
+
+        skusCreated++;
+      }
+
+      return { skusCreated };
+    });
   }
 }
