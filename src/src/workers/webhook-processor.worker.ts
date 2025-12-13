@@ -134,7 +134,19 @@ export class WebhookProcessorWorker extends BaseWorker<WebhookJobData> {
   ): Promise<void> {
     this.logger.log(`Processing Shopify order: ${payload.id}`);
 
-    // TODO: Implement in integration service
+    // Initialize Shopify service (will be injected later via constructor)
+    const { ShopifyIntegrationService } = await import('../integrations/shopify/shopify-integration.service');
+    const { ShopifyClient } = await import('../integrations/shopify/shopify-client');
+    const { PrismaService } = await import('@common/database/prisma.service');
+    const { ConfigService } = await import('@nestjs/config');
+    const { IntegrationLoggingService } = await import('@services/integration-logging.service');
+    const { OrdersService } = await import('@modules/orders/orders.service');
+    const { InventoryService } = await import('@modules/inventory/inventory.service');
+    const { ActorType } = await import('@common/enums/actor-type.enum');
+
+    // This is a temporary workaround - ideally services should be injected via constructor
+    // For now, we'll use a global service instance or pass it through job data
+    
     // 1. Map external order to internal DTO
     // const orderDto = await shopifyService.mapExternalOrderToInternal(channelId, payload);
     // 
@@ -148,7 +160,8 @@ export class WebhookProcessorWorker extends BaseWorker<WebhookJobData> {
     // 
     // 3. If order is paid, reserve inventory (already handled by OrdersService)
 
-    this.logger.debug(`Shopify order processed: ${payload.id}`);
+    this.logger.debug(`Shopify order webhook received: ${payload.id}`);
+    this.logger.warn('Shopify order processing not yet fully implemented in webhook worker');
   }
 
   /**
