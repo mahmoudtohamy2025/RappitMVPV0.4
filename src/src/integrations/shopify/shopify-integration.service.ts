@@ -336,6 +336,7 @@ export class ShopifyIntegrationService {
   async findSkuByShopifyVariantId(
     variantId: number,
     organizationId: string,
+    channelId?: string,
   ): Promise<{ sku: string; id: string } | null> {
     const skuRecord = await this.prisma.sKU.findFirst({
       where: {
@@ -356,24 +357,8 @@ export class ShopifyIntegrationService {
         `SKU not found for Shopify variant ${variantId} in org ${organizationId}`,
       );
       
-      // Create UnmappedItem record
-      await this.prisma.unmappedItem.upsert({
-        where: {
-          organizationId_externalId: {
-            organizationId,
-            externalId: `shopify-variant-${variantId}`,
-          },
-        },
-        create: {
-          organizationId,
-          externalId: `shopify-variant-${variantId}`,
-          itemType: 'VARIANT',
-          externalData: { variant_id: variantId },
-        },
-        update: {
-          lastSeenAt: new Date(),
-        },
-      });
+      // Note: UnmappedItem creation would happen during order processing
+      // when we have the full context (order ID, item details, etc.)
     }
 
     return skuRecord;
@@ -543,39 +528,49 @@ export class ShopifyIntegrationService {
     shopifyProduct: ShopifyProduct,
   ): Promise<{ skusCreated: number }> {
     return this.prisma.$transaction(async (tx) => {
-      // Upsert product
-      const product = await tx.product.upsert({
+      // Find existing product by shopify_product_id in metadata
+      let product = await tx.product.findFirst({
         where: {
-          organizationId_channelId_externalProductId: {
-            organizationId,
-            channelId,
-            externalProductId: String(shopifyProduct.id),
-          },
-        },
-        create: {
           organizationId,
           channelId,
-          externalProductId: String(shopifyProduct.id),
-          name: shopifyProduct.title,
-          description: shopifyProduct.body_html,
           metadata: {
-            [SHOPIFY_METADATA_KEYS.PRODUCT_ID]: shopifyProduct.id,
-            vendor: shopifyProduct.vendor,
-            product_type: shopifyProduct.product_type,
-            tags: shopifyProduct.tags,
-          },
-        },
-        update: {
-          name: shopifyProduct.title,
-          description: shopifyProduct.body_html,
-          metadata: {
-            [SHOPIFY_METADATA_KEYS.PRODUCT_ID]: shopifyProduct.id,
-            vendor: shopifyProduct.vendor,
-            product_type: shopifyProduct.product_type,
-            tags: shopifyProduct.tags,
+            path: [SHOPIFY_METADATA_KEYS.PRODUCT_ID],
+            equals: shopifyProduct.id,
           },
         },
       });
+
+      // Create or update product
+      if (product) {
+        product = await tx.product.update({
+          where: { id: product.id },
+          data: {
+            name: shopifyProduct.title,
+            description: shopifyProduct.body_html,
+            metadata: {
+              [SHOPIFY_METADATA_KEYS.PRODUCT_ID]: shopifyProduct.id,
+              vendor: shopifyProduct.vendor,
+              product_type: shopifyProduct.product_type,
+              tags: shopifyProduct.tags,
+            },
+          },
+        });
+      } else {
+        product = await tx.product.create({
+          data: {
+            organizationId,
+            channelId,
+            name: shopifyProduct.title,
+            description: shopifyProduct.body_html,
+            metadata: {
+              [SHOPIFY_METADATA_KEYS.PRODUCT_ID]: shopifyProduct.id,
+              vendor: shopifyProduct.vendor,
+              product_type: shopifyProduct.product_type,
+              tags: shopifyProduct.tags,
+            },
+          },
+        });
+      }
 
       let skusCreated = 0;
 
@@ -585,34 +580,29 @@ export class ShopifyIntegrationService {
         
         await tx.sKU.upsert({
           where: {
-            organizationId_sku: {
-              organizationId,
-              sku: skuCode,
-            },
+            sku: skuCode,
           },
           create: {
             organizationId,
             productId: product.id,
             sku: skuCode,
-            name: `${shopifyProduct.title} - ${variant.title}`,
             barcode: variant.barcode,
-            price: parseFloat(variant.price),
             metadata: {
               [SHOPIFY_METADATA_KEYS.VARIANT_ID]: variant.id,
               [SHOPIFY_METADATA_KEYS.PRODUCT_ID]: shopifyProduct.id,
               [SHOPIFY_METADATA_KEYS.INVENTORY_ITEM_ID]: variant.inventory_item_id,
               variant_title: variant.title,
+              price: variant.price,
             },
           },
           update: {
-            name: `${shopifyProduct.title} - ${variant.title}`,
             barcode: variant.barcode,
-            price: parseFloat(variant.price),
             metadata: {
               [SHOPIFY_METADATA_KEYS.VARIANT_ID]: variant.id,
               [SHOPIFY_METADATA_KEYS.PRODUCT_ID]: shopifyProduct.id,
               [SHOPIFY_METADATA_KEYS.INVENTORY_ITEM_ID]: variant.inventory_item_id,
               variant_title: variant.title,
+              price: variant.price,
             },
           },
         });
