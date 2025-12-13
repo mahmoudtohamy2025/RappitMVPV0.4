@@ -2,14 +2,29 @@ import { Injectable, Logger } from '@nestjs/common';
 import { IntegrationType } from '@prisma/client';
 import { IntegrationLoggingService } from '@services/integration-logging.service';
 import { createLogger, StructuredLogger } from '@utils/structured-logger';
+import { FedExClient, FedExClientConfig } from './fedex-client';
+import {
+  FedExCreateShipmentRequest,
+  FedExCreateShipmentResponse,
+  FedExTrackingRequest,
+  FedExTrackingResponse as FedExAPITrackingResponse,
+  FedExCancelShipmentRequest,
+  FedExCancelShipmentResponse,
+  FedExRateQuoteRequest,
+  FedExRateQuoteResponse,
+  FedExServiceType,
+} from './fedex.types';
+import {
+  FEDEX_API_CONFIG,
+  FEDEX_DEFAULTS,
+  mapFedExStatusToInternal,
+} from './fedex.constants';
 
 /**
  * FedEx Integration Service
  * 
  * Handles FedEx API integration for shipment creation, tracking, and label retrieval.
- * 
- * MVP: Mock implementation with deterministic responses
- * PRODUCTION TODO: Implement real FedEx API integration with OAuth2
+ * Uses FedExClient for OAuth2 authentication and HTTP communication.
  * 
  * FedEx API Docs: https://developer.fedex.com/api/en-us/home.html
  */
@@ -22,6 +37,7 @@ export interface FedExShipmentRequest {
     company?: string;
     address: string;
     city: string;
+    state?: string;
     postalCode: string;
     country: string;
     phone: string;
@@ -32,6 +48,7 @@ export interface FedExShipmentRequest {
     company?: string;
     address: string;
     city: string;
+    state?: string;
     postalCode: string;
     country: string;
     phone: string;
@@ -80,8 +97,7 @@ export interface FedExTrackingResponse {
 @Injectable()
 export class FedExIntegrationService {
   private readonly logger: StructuredLogger;
-  private accessToken?: string;
-  private tokenExpiry?: Date;
+  private clients: Map<string, FedExClient> = new Map();
 
   constructor(
     private integrationLogging?: IntegrationLoggingService,
@@ -91,19 +107,39 @@ export class FedExIntegrationService {
   }
 
   /**
+   * Get or create FedEx client for organization
+   */
+  private getClient(shippingAccount: any): FedExClient {
+    const key = `${shippingAccount.organizationId}:${shippingAccount.id}`;
+    
+    if (!this.clients.has(key)) {
+      const credentials = this.getCredentials(shippingAccount);
+      
+      const config: FedExClientConfig = {
+        apiUrl: process.env.FEDEX_API_URL || 'https://apis-sandbox.fedex.com',
+        apiKey: credentials.apiKey || process.env.FEDEX_API_KEY!,
+        secretKey: credentials.secretKey || process.env.FEDEX_SECRET_KEY!,
+        accountNumber: credentials.accountNumber || process.env.FEDEX_ACCOUNT_NUMBER!,
+        organizationId: shippingAccount.organizationId,
+      };
+
+      const client = new FedExClient(config, this.integrationLogging);
+      this.clients.set(key, client);
+    }
+
+    return this.clients.get(key)!;
+  }
+
+  /**
    * Create shipment with FedEx
    * 
-   * MVP: Returns mock response
-   * PRODUCTION TODO: Implement real API call with OAuth2
+   * Calls real FedEx API to create shipment and return tracking number + label
    */
   async createShipment(
     shippingAccount: any,
     request: FedExShipmentRequest,
     correlationId?: string,
   ): Promise<FedExShipmentResponse> {
-    const startTime = Date.now();
-    const operation = 'createShipment';
-
     this.logger.log(`Creating FedEx shipment (${request.testMode ? 'TEST' : 'LIVE'} mode)`, {
       correlationId,
       testMode: request.testMode,
@@ -111,75 +147,30 @@ export class FedExIntegrationService {
     });
 
     try {
-      const credentials = this.getCredentials(shippingAccount);
-
-      // MVP: Mock implementation
-      if (process.env.NODE_ENV !== 'production' || request.testMode) {
-        const result = this.mockCreateShipment(request);
-        
-        const duration = Date.now() - startTime;
-
-        await this.logSuccess(
-          shippingAccount.organizationId,
-          operation,
-          'mock',
-          'POST',
-          request,
-          result,
-          duration,
-          correlationId,
-        );
-
-        return result;
+      // Use mock implementation in test mode
+      if (request.testMode && process.env.NODE_ENV !== 'production') {
+        return this.mockCreateShipment(request);
       }
 
-      // PRODUCTION: Implement real API call
-      await this.ensureAccessToken(credentials);
-
-      const apiUrl = process.env.FEDEX_API_URL || 'https://apis.fedex.com';
-      const endpoint = `${apiUrl}/ship/v1/shipments`;
-
+      // Build FedEx API payload
       const payload = this.buildCreateShipmentPayload(request);
 
-      const response = await this.httpPost(
-        endpoint,
+      // Get client and make API call
+      const client = this.getClient(shippingAccount);
+      const response = await client.post<FedExCreateShipmentResponse>(
+        FEDEX_API_CONFIG.ENDPOINTS.CREATE_SHIPMENT,
         payload,
-        this.accessToken!,
-        shippingAccount.organizationId,
-        operation,
         correlationId,
       );
 
-      const result = this.parseCreateShipmentResponse(response);
-      
-      const duration = Date.now() - startTime;
-
-      await this.logSuccess(
-        shippingAccount.organizationId,
-        operation,
-        endpoint,
-        'POST',
-        payload,
-        result,
-        duration,
+      // Parse and return response
+      return this.parseCreateShipmentResponse(response);
+    } catch (error: any) {
+      this.logger.error('Failed to create FedEx shipment', error, {
         correlationId,
-      );
-
-      return result;
-    } catch (error) {
-      const duration = Date.now() - startTime;
-
-      await this.logFailure(
-        shippingAccount.organizationId,
-        operation,
-        'unknown',
-        'POST',
-        request,
-        error,
-        500,
-        duration,
-        correlationId,
-      );
+        error: error.message,
+        code: error.code,
+      });
 
       throw error;
     }
@@ -188,90 +179,53 @@ export class FedExIntegrationService {
   /**
    * Get tracking information
    * 
-   * MVP: Returns mock response
-   * PRODUCTION TODO: Implement real API call
+   * Calls real FedEx tracking API
    */
   async getTracking(
     shippingAccount: any,
     trackingNumber: string,
     correlationId?: string,
   ): Promise<FedExTrackingResponse> {
-    const startTime = Date.now();
-    const operation = 'getTracking';
-
     this.logger.log(`Fetching FedEx tracking: ${trackingNumber}`, {
       correlationId,
       trackingNumber,
     });
 
     try {
-      const credentials = this.getCredentials(shippingAccount);
-
-      // MVP: Mock implementation
-      if (process.env.NODE_ENV !== 'production' || shippingAccount.testMode) {
-        const result = this.mockGetTracking(trackingNumber);
-        
-        const duration = Date.now() - startTime;
-
-        await this.logSuccess(
-          shippingAccount.organizationId,
-          operation,
-          'mock',
-          'GET',
-          { trackingNumber },
-          result,
-          duration,
-          correlationId,
-        );
-
-        return result;
+      // Use mock implementation in test mode
+      if (shippingAccount.testMode && process.env.NODE_ENV !== 'production') {
+        return this.mockGetTracking(trackingNumber);
       }
 
-      // PRODUCTION: Implement real API call
-      await this.ensureAccessToken(credentials);
+      // Build FedEx tracking request
+      const payload: FedExTrackingRequest = {
+        includeDetailedScans: true,
+        trackingInfo: [
+          {
+            trackingNumberInfo: {
+              trackingNumber,
+            },
+          },
+        ],
+      };
 
-      const apiUrl = process.env.FEDEX_API_URL;
-      const endpoint = `${apiUrl}/track/v1/trackingnumbers`;
-
-      const response = await this.httpPost(
-        endpoint,
-        { trackingInfo: [{ trackingNumberInfo: { trackingNumber } }] },
-        this.accessToken!,
-        shippingAccount.organizationId,
-        operation,
+      // Get client and make API call
+      const client = this.getClient(shippingAccount);
+      const response = await client.post<FedExAPITrackingResponse>(
+        FEDEX_API_CONFIG.ENDPOINTS.TRACK,
+        payload,
         correlationId,
       );
 
-      const result = this.parseTrackingResponse(response);
-      
-      const duration = Date.now() - startTime;
-
-      await this.logSuccess(
-        shippingAccount.organizationId,
-        operation,
-        endpoint,
-        'POST',
-        { trackingNumber },
-        result,
-        duration,
+      // Parse and return response
+      return this.parseTrackingResponse(response, trackingNumber);
+    } catch (error: any) {
+      this.logger.error('Failed to get FedEx tracking', error, {
         correlationId,
-      );
-
-      return result;
-    } catch (error) {
-      const duration = Date.now() - startTime;
-
-      await this.logFailure(
-        shippingAccount.organizationId,
-        operation,
-        'unknown',
-        'POST',
-        { trackingNumber },
-        error,
-        500,
-        duration,
-        correlationId,
-      );
+        trackingNumber,
+        error: error.message,
+        code: error.code,
+      });
 
       throw error;
     }
@@ -280,60 +234,148 @@ export class FedExIntegrationService {
   /**
    * Get shipment label
    * 
-   * MVP: Returns mock PDF
-   * PRODUCTION TODO: Label is returned in createShipment response
+   * Note: FedEx returns label in createShipment response.
+   * This method returns mock label for testing or throws error.
    */
   async getLabel(
     shippingAccount: any,
     carrierShipmentId: string,
     correlationId?: string,
   ): Promise<{ content: Buffer; contentType: string }> {
-    const startTime = Date.now();
-    const operation = 'getLabel';
-
     this.logger.log(`Fetching FedEx label: ${carrierShipmentId}`, {
       correlationId,
       carrierShipmentId,
     });
 
+    // FedEx labels are returned in createShipment response
+    // Return mock for test mode only
+    if (shippingAccount.testMode && process.env.NODE_ENV !== 'production') {
+      return this.mockGetLabel(carrierShipmentId);
+    }
+
+    throw new Error(
+      'FedEx labels are returned in createShipment response. ' +
+      'Use the label from the shipment creation instead of calling getLabel.',
+    );
+  }
+
+  /**
+   * Cancel shipment (optional)
+   */
+  async cancelShipment(
+    shippingAccount: any,
+    trackingNumber: string,
+    correlationId?: string,
+  ): Promise<boolean> {
+    this.logger.log(`Cancelling FedEx shipment: ${trackingNumber}`, {
+      correlationId,
+      trackingNumber,
+    });
+
     try {
-      // MVP: Return mock PDF
-      if (process.env.NODE_ENV !== 'production' || shippingAccount.testMode) {
-        const result = this.mockGetLabel(carrierShipmentId);
-        
-        const duration = Date.now() - startTime;
+      const credentials = this.getCredentials(shippingAccount);
 
-        await this.logSuccess(
-          shippingAccount.organizationId,
-          operation,
-          'mock',
-          'GET',
-          { carrierShipmentId },
-          { contentType: result.contentType, size: result.content.length },
-          duration,
-          correlationId,
-        );
+      const payload: FedExCancelShipmentRequest = {
+        accountNumber: {
+          value: credentials.accountNumber || process.env.FEDEX_ACCOUNT_NUMBER!,
+        },
+        trackingNumber,
+      };
 
-        return result;
-      }
-
-      // PRODUCTION: FedEx returns label in createShipment response
-      // If label needs to be retrieved separately, implement here
-      throw new Error('FedEx label API not implemented - label returned in createShipment');
-    } catch (error) {
-      const duration = Date.now() - startTime;
-
-      await this.logFailure(
-        shippingAccount.organizationId,
-        operation,
-        'unknown',
-        'GET',
-        { carrierShipmentId },
-        error,
-        500,
-        duration,
+      const client = this.getClient(shippingAccount);
+      const response = await client.put<FedExCancelShipmentResponse>(
+        FEDEX_API_CONFIG.ENDPOINTS.CANCEL_SHIPMENT,
+        payload,
         correlationId,
       );
+
+      return response.output.cancelledShipment;
+    } catch (error: any) {
+      this.logger.error('Failed to cancel FedEx shipment', error, {
+        correlationId,
+        trackingNumber,
+        error: error.message,
+      });
+
+      throw error;
+    }
+  }
+
+  /**
+   * Get rate quotes (optional but useful)
+   */
+  async getRates(
+    shippingAccount: any,
+    request: Omit<FedExShipmentRequest, 'testMode'>,
+    correlationId?: string,
+  ): Promise<any> {
+    this.logger.log('Getting FedEx rate quotes', {
+      correlationId,
+    });
+
+    try {
+      const credentials = this.getCredentials(shippingAccount);
+
+      const payload: FedExRateQuoteRequest = {
+        accountNumber: {
+          value: credentials.accountNumber || process.env.FEDEX_ACCOUNT_NUMBER!,
+        },
+        requestedShipment: {
+          shipper: {
+            address: {
+              streetLines: [request.shipper.address],
+              city: request.shipper.city,
+              stateOrProvinceCode: request.shipper.state,
+              postalCode: request.shipper.postalCode,
+              countryCode: request.shipper.country,
+            },
+          },
+          recipient: {
+            address: {
+              streetLines: [request.recipient.address],
+              city: request.recipient.city,
+              stateOrProvinceCode: request.recipient.state,
+              postalCode: request.recipient.postalCode,
+              countryCode: request.recipient.country,
+            },
+          },
+          pickupType: FEDEX_DEFAULTS.PICKUP_TYPE,
+          rateRequestType: ['LIST', 'ACCOUNT'],
+          requestedPackageLineItems: request.packages.map((pkg) => ({
+            weight: {
+              units: FEDEX_DEFAULTS.WEIGHT_UNITS,
+              value: pkg.weightKg,
+            },
+            dimensions: pkg.lengthCm
+              ? {
+                  length: pkg.lengthCm,
+                  width: pkg.widthCm!,
+                  height: pkg.heightCm!,
+                  units: FEDEX_DEFAULTS.DIMENSION_UNITS,
+                }
+              : undefined,
+          })),
+        },
+      };
+
+      const client = this.getClient(shippingAccount);
+      const response = await client.post<FedExRateQuoteResponse>(
+        FEDEX_API_CONFIG.ENDPOINTS.RATE_QUOTE,
+        payload,
+        correlationId,
+      );
+
+      return response.output.rateReplyDetails.map((rate) => ({
+        serviceType: rate.serviceType,
+        serviceName: rate.serviceName,
+        cost: rate.ratedShipmentDetails[0]?.totalNetCharge,
+        currency: rate.ratedShipmentDetails[0]?.currency,
+      }));
+    } catch (error: any) {
+      this.logger.error('Failed to get FedEx rates', error, {
+        correlationId,
+        error: error.message,
+      });
 
       throw error;
     }
@@ -464,44 +506,231 @@ startxref
   }
 
   // ============================================================================
-  // OAUTH2 AUTHENTICATION (PRODUCTION TODO)
+  // PAYLOAD BUILDING
   // ============================================================================
 
   /**
-   * Ensure we have a valid access token
-   * 
-   * FedEx uses OAuth2 with token expiry
-   * 
-   * TODO: Implement OAuth2 flow
+   * Build FedEx create shipment API payload
    */
-  private async ensureAccessToken(credentials: any): Promise<void> {
-    // Check if token is still valid
-    if (this.accessToken && this.tokenExpiry && this.tokenExpiry > new Date()) {
-      return;
+  private buildCreateShipmentPayload(request: FedExShipmentRequest): FedExCreateShipmentRequest {
+    const credentials = this.getCredentials(request.accountNumber);
+
+    // Get shipper info from environment or request
+    const shipperInfo = {
+      name: process.env.FEDEX_SHIPPER_NAME || request.shipper.name,
+      street: process.env.FEDEX_SHIPPER_STREET || request.shipper.address,
+      city: process.env.FEDEX_SHIPPER_CITY || request.shipper.city,
+      state: process.env.FEDEX_SHIPPER_STATE || request.shipper.state || '',
+      postalCode: process.env.FEDEX_SHIPPER_POSTAL_CODE || request.shipper.postalCode,
+      country: process.env.FEDEX_SHIPPER_COUNTRY || request.shipper.country,
+      phone: process.env.FEDEX_SHIPPER_PHONE || request.shipper.phone,
+    };
+
+    const payload: FedExCreateShipmentRequest = {
+      labelResponseOptions: 'LABEL',
+      requestedShipment: {
+        shipper: {
+          contact: {
+            personName: shipperInfo.name,
+            phoneNumber: shipperInfo.phone,
+            companyName: request.shipper.company,
+          },
+          address: {
+            streetLines: [shipperInfo.street],
+            city: shipperInfo.city,
+            stateOrProvinceCode: shipperInfo.state,
+            postalCode: shipperInfo.postalCode,
+            countryCode: shipperInfo.country,
+          },
+        },
+        recipients: [
+          {
+            contact: {
+              personName: request.recipient.name,
+              phoneNumber: request.recipient.phone,
+              companyName: request.recipient.company,
+              emailAddress: request.recipient.email,
+            },
+            address: {
+              streetLines: [request.recipient.address],
+              city: request.recipient.city,
+              stateOrProvinceCode: request.recipient.state,
+              postalCode: request.recipient.postalCode,
+              countryCode: request.recipient.country,
+            },
+          },
+        ],
+        pickupType: FEDEX_DEFAULTS.PICKUP_TYPE,
+        serviceType: request.serviceCode || FEDEX_DEFAULTS.SERVICE_TYPE,
+        packagingType: FEDEX_DEFAULTS.PACKAGING_TYPE,
+        shippingChargesPayment: {
+          paymentType: FEDEX_DEFAULTS.PAYMENT_TYPE,
+          payor: {
+            responsibleParty: {
+              accountNumber: {
+                value: process.env.FEDEX_SHIPPER_ACCOUNT || credentials.accountNumber,
+              },
+            },
+          },
+        },
+        labelSpecification: {
+          labelFormatType: FEDEX_DEFAULTS.LABEL_FORMAT_TYPE,
+          imageType: FEDEX_DEFAULTS.LABEL_IMAGE_TYPE,
+          labelStockType: FEDEX_DEFAULTS.LABEL_STOCK_TYPE,
+        },
+        requestedPackageLineItems: request.packages.map((pkg) => ({
+          weight: {
+            units: FEDEX_DEFAULTS.WEIGHT_UNITS,
+            value: pkg.weightKg,
+          },
+          dimensions: pkg.lengthCm
+            ? {
+                length: pkg.lengthCm,
+                width: pkg.widthCm!,
+                height: pkg.heightCm!,
+                units: FEDEX_DEFAULTS.DIMENSION_UNITS,
+              }
+            : undefined,
+        })),
+      },
+      accountNumber: {
+        value: credentials.accountNumber,
+      },
+    };
+
+    return payload;
+  }
+
+  // ============================================================================
+  // RESPONSE PARSING
+  // ============================================================================
+
+  /**
+   * Parse FedEx create shipment API response
+   */
+  private parseCreateShipmentResponse(
+    response: FedExCreateShipmentResponse,
+  ): FedExShipmentResponse {
+    const shipment = response.output.transactionShipments[0];
+    const packageDetail = shipment.completedShipmentDetail.completedPackageDetails[0];
+    const trackingInfo = packageDetail.trackingIds[0];
+
+    // Extract label (base64 encoded PDF)
+    let label: { content: Buffer; contentType: string } | undefined;
+    if (packageDetail.label) {
+      label = {
+        content: Buffer.from(packageDetail.label.encodedLabel, 'base64'),
+        contentType: 'application/pdf',
+      };
     }
 
-    // TODO: Implement OAuth2 token exchange
-    const tokenUrl = `${process.env.FEDEX_API_URL}/oauth/token`;
-    
-    const response = await axios.post(tokenUrl, {
-      grant_type: 'client_credentials',
-      client_id: credentials.apiKey,
-      client_secret: credentials.apiSecret,
-    });
-    
-    this.accessToken = response.data.access_token;
-    this.tokenExpiry = new Date(Date.now() + response.data.expires_in * 1000);
+    // Extract cost
+    let cost: number | undefined;
+    const rating = shipment.completedShipmentDetail.shipmentRating;
+    if (rating && rating.shipmentRateDetails.length > 0) {
+      cost = rating.shipmentRateDetails[0].totalNetCharge;
+    }
 
-    throw new Error('OAuth2 token exchange not implemented');
+    // Extract estimated delivery
+    let estimatedDelivery: Date | undefined;
+    if (shipment.shipDatestamp) {
+      // FedEx provides ship date, not estimated delivery in creation response
+      // Estimate based on service type
+      const daysToAdd = shipment.serviceType.includes('OVERNIGHT') ? 1 : 3;
+      estimatedDelivery = new Date(shipment.shipDatestamp);
+      estimatedDelivery.setDate(estimatedDelivery.getDate() + daysToAdd);
+    }
+
+    return {
+      carrierShipmentId: shipment.masterTrackingNumber,
+      trackingNumber: trackingInfo.trackingNumber,
+      label,
+      cost,
+      estimatedDelivery,
+      raw: response,
+    };
+  }
+
+  /**
+   * Parse FedEx tracking API response
+   */
+  private parseTrackingResponse(
+    response: FedExAPITrackingResponse,
+    trackingNumber: string,
+  ): FedExTrackingResponse {
+    const trackResult = response.output.completeTrackResults[0]?.trackResults[0];
+
+    if (!trackResult) {
+      throw new Error(`No tracking information found for ${trackingNumber}`);
+    }
+
+    // Extract status
+    const latestStatus = trackResult.latestStatusDetail;
+    const status = latestStatus?.derivedCode || latestStatus?.code || 'UNKNOWN';
+
+    // Extract events
+    const events = (trackResult.scanEvents || []).map((event) => ({
+      timestamp: new Date(event.timestamp),
+      status: event.derivedStatusCode || event.eventType,
+      location: this.formatLocation(event.scanLocation),
+      description: event.eventDescription,
+    }));
+
+    // Extract delivery dates
+    const dateAndTimes = trackResult.dateAndTimes || [];
+    const estimatedDeliveryObj = dateAndTimes.find((d) => d.type === 'ESTIMATED_DELIVERY');
+    const actualDeliveryObj = dateAndTimes.find((d) => d.type === 'ACTUAL_DELIVERY');
+
+    const estimatedDelivery = estimatedDeliveryObj
+      ? new Date(estimatedDeliveryObj.dateTime)
+      : undefined;
+    const actualDelivery = actualDeliveryObj
+      ? new Date(actualDeliveryObj.dateTime)
+      : undefined;
+
+    return {
+      trackingNumber,
+      status,
+      events,
+      estimatedDelivery,
+      actualDelivery,
+      raw: response,
+    };
+  }
+
+  /**
+   * Format location from FedEx address
+   */
+  private formatLocation(location?: {
+    city?: string;
+    stateOrProvinceCode?: string;
+    countryCode?: string;
+  }): string | undefined {
+    if (!location) return undefined;
+
+    const parts = [
+      location.city,
+      location.stateOrProvinceCode,
+      location.countryCode,
+    ].filter(Boolean);
+
+    return parts.length > 0 ? parts.join(', ') : undefined;
   }
 
   // ============================================================================
   // HELPER METHODS
   // ============================================================================
 
-  private getCredentials(shippingAccount: any): { apiKey: string; apiSecret: string } {
-    // TODO: Decrypt credentials
-    return shippingAccount.credentials as { apiKey: string; apiSecret: string };
+  private getCredentials(accountNumber: string): {
+    apiKey: string;
+    secretKey: string;
+    accountNumber: string;
+  } {
+    return {
+      apiKey: process.env.FEDEX_API_KEY!,
+      secretKey: process.env.FEDEX_SECRET_KEY!,
+      accountNumber: process.env.FEDEX_ACCOUNT_NUMBER || accountNumber,
+    };
   }
 
   private generateMockTrackingNumber(carrier: string): string {
@@ -514,118 +743,5 @@ startxref
     const timestamp = Date.now().toString();
     const random = Math.floor(Math.random() * 100000).toString().padStart(5, '0');
     return `${carrier}-${timestamp}-${random}`;
-  }
-
-  // ============================================================================
-  // HTTP STUBS (PRODUCTION TODO)
-  // ============================================================================
-
-  /**
-   * HTTP POST with OAuth2 bearer token
-   * 
-   * TODO: Implement with axios/fetch
-   */
-  protected async httpPost(
-    url: string,
-    payload: any,
-    accessToken: string,
-    organizationId: string,
-    operation: string,
-    correlationId?: string,
-  ): Promise<any> {
-    this.logger.debug(`POST ${url}`);
-
-    // TODO: Implement actual HTTP call
-    const response = await axios.post(url, payload, {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      timeout: 30000,
-    });
-    
-    return response.data;
-
-    throw new Error('httpPost not implemented');
-  }
-
-  /**
-   * Build FedEx API payload
-   */
-  private buildCreateShipmentPayload(request: FedExShipmentRequest): any {
-    // TODO: Build payload according to FedEx API spec
-    return {};
-  }
-
-  /**
-   * Parse FedEx API response
-   */
-  private parseCreateShipmentResponse(response: any): FedExShipmentResponse {
-    // TODO: Parse FedEx response
-    return {} as FedExShipmentResponse;
-  }
-
-  /**
-   * Parse FedEx tracking response
-   */
-  private parseTrackingResponse(response: any): FedExTrackingResponse {
-    // TODO: Parse FedEx tracking response
-    return {} as FedExTrackingResponse;
-  }
-
-  // ============================================================================
-  // LOGGING
-  // ============================================================================
-
-  private async logSuccess(
-    organizationId: string,
-    operation: string,
-    endpoint: string,
-    method: string,
-    request: any,
-    response: any,
-    duration: number,
-    correlationId?: string,
-  ): Promise<void> {
-    if (this.integrationLogging) {
-      await this.integrationLogging.logSuccess(
-        organizationId,
-        IntegrationType.FEDEX,
-        operation,
-        endpoint,
-        method,
-        request,
-        response,
-        duration,
-        correlationId,
-      );
-    }
-  }
-
-  private async logFailure(
-    organizationId: string,
-    operation: string,
-    endpoint: string,
-    method: string,
-    request: any,
-    error: any,
-    statusCode: number,
-    duration: number,
-    correlationId?: string,
-  ): Promise<void> {
-    if (this.integrationLogging) {
-      await this.integrationLogging.logFailure(
-        organizationId,
-        IntegrationType.FEDEX,
-        operation,
-        endpoint,
-        method,
-        request,
-        error,
-        statusCode,
-        duration,
-        correlationId,
-      );
-    }
   }
 }
