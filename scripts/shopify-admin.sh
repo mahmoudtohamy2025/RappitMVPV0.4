@@ -382,6 +382,10 @@ main() {
 }
 
 # Load .env if available
-[ -f ".env" ] && export $(grep -v '^#' .env | xargs) 2>/dev/null || true
+if [ -f ".env" ]; then
+    set -a
+    source .env 2>/dev/null
+    set +a
+fi
 
 main "$@"

@@ -108,7 +108,11 @@ main() {
     echo "Testing against: $BASE_URL"
     
     # Load environment if available
-    [ -f ".env" ] && export $(grep -v '^#' .env | xargs) 2>/dev/null
+    if [ -f ".env" ]; then
+        set -a
+        source .env 2>/dev/null
+        set +a
+    fi
     
     # Run tests
     test_health_check
