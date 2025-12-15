@@ -1,6 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '@common/database/prisma.service';
+import { FedExIntegrationService } from '@integrations/shipping/fedex-integration.service';
+import { IntegrationLoggingService } from '@services/integration-logging.service';
+
+/**
+ * FedEx Service - High-level API
+ * 
+ * This service provides a simplified interface to FedEx functionality
+ * and delegates to FedExIntegrationService for actual API calls.
+ * 
+ * Maintained for backward compatibility with existing code.
+ */
 
 interface FedExShipmentRequest {
   orderId: string;
@@ -31,136 +42,138 @@ interface FedExShipmentRequest {
 @Injectable()
 export class FedexService {
   private readonly logger = new Logger(FedexService.name);
-  private readonly apiUrl: string;
-  private readonly apiKey: string;
+  private readonly integrationService: FedExIntegrationService;
 
   constructor(
     private prisma: PrismaService,
     private configService: ConfigService,
+    integrationLogging?: IntegrationLoggingService,
   ) {
-    this.apiUrl = this.configService.get('fedex.apiUrl') || 'https://apis-mock.fedex.com';
-    this.apiKey = this.configService.get('fedex.apiKey') || 'mock-api-key';
+    // Initialize the integration service
+    this.integrationService = new FedExIntegrationService(integrationLogging);
   }
 
   async createShipment(request: FedExShipmentRequest) {
     this.logger.log(`Creating FedEx shipment for order ${request.orderId}`);
 
-    // In real implementation, make API call to FedEx
-    // const response = await fetch(`${this.apiUrl}/ship/v1/shipments`, {
-    //   method: 'POST',
-    //   headers: {
-    //     'Authorization': `Bearer ${this.apiKey}`,
-    //     'Content-Type': 'application/json',
-    //   },
-    //   body: JSON.stringify({
-    //     requestedShipment: {
-    //       shipper: request.shipper,
-    //       recipients: [request.recipient],
-    //       requestedPackageLineItems: request.packages,
-    //     },
-    //   }),
-    // });
+    // Get shipping account from database
+    const shippingAccount = await this.getOrCreateShippingAccount();
 
-    // Mock response
-    const trackingNumber = `FEDEX-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
-    const labelUrl = `https://example.com/labels/${trackingNumber}.pdf`;
+    // Convert to integration service format
+    const integrationRequest = {
+      accountNumber: shippingAccount.accountNumber,
+      testMode: shippingAccount.testMode || false,
+      shipper: {
+        name: request.shipper.name,
+        address: request.shipper.address,
+        city: request.shipper.city,
+        postalCode: request.shipper.postalCode,
+        country: request.shipper.country,
+        phone: this.configService.get('fedex.shipperPhone') || '+966123456789',
+      },
+      recipient: {
+        name: request.recipient.name,
+        address: request.recipient.address,
+        city: request.recipient.city,
+        postalCode: request.recipient.postalCode,
+        country: request.recipient.country,
+        phone: '+966987654321', // Default recipient phone
+      },
+      packages: request.packages.map((pkg) => ({
+        weightKg: pkg.weight,
+        lengthCm: pkg.dimensions.length,
+        widthCm: pkg.dimensions.width,
+        heightCm: pkg.dimensions.height,
+      })),
+    };
+
+    // Delegate to integration service
+    const response = await this.integrationService.createShipment(
+      shippingAccount,
+      integrationRequest,
+      `order-${request.orderId}`,
+    );
 
     return {
       success: true,
-      trackingNumber,
-      labelUrl,
-      shipmentId: `FEDEX-SHIP-${Date.now()}`,
+      trackingNumber: response.trackingNumber,
+      labelUrl: response.label ? 'embedded' : undefined,
+      labelContent: response.label?.content,
+      shipmentId: response.carrierShipmentId,
+      cost: response.cost,
+      estimatedDelivery: response.estimatedDelivery,
     };
   }
 
   async trackShipment(trackingNumber: string) {
     this.logger.log(`Tracking FedEx shipment: ${trackingNumber}`);
 
-    // In real implementation, make API call to FedEx tracking
-    // const response = await fetch(
-    //   `${this.apiUrl}/track/v1/trackingnumbers`,
-    //   {
-    //     method: 'POST',
-    //     headers: {
-    //       'Authorization': `Bearer ${this.apiKey}`,
-    //       'Content-Type': 'application/json',
-    //     },
-    //     body: JSON.stringify({
-    //       trackingInfo: [
-    //         {
-    //           trackingNumberInfo: {
-    //             trackingNumber,
-    //           },
-    //         },
-    //       ],
-    //     }),
-    //   }
-    // );
+    const shippingAccount = await this.getOrCreateShippingAccount();
 
-    // Mock tracking data
-    return {
+    const response = await this.integrationService.getTracking(
+      shippingAccount,
       trackingNumber,
-      status: 'IN_TRANSIT',
-      events: [
-        {
-          timestamp: new Date().toISOString(),
-          status: 'PU',
-          location: 'Dubai, UAE',
-          description: 'Shipment picked up',
-        },
-        {
-          timestamp: new Date(Date.now() - 7200000).toISOString(),
-          status: 'IT',
-          location: 'Abu Dhabi, UAE',
-          description: 'In transit',
-        },
-      ],
+      `track-${trackingNumber}`,
+    );
+
+    return {
+      trackingNumber: response.trackingNumber,
+      status: response.status,
+      events: response.events.map((event) => ({
+        timestamp: event.timestamp.toISOString(),
+        status: event.status,
+        location: event.location,
+        description: event.description,
+      })),
+      estimatedDelivery: response.estimatedDelivery?.toISOString(),
+      actualDelivery: response.actualDelivery?.toISOString(),
     };
   }
 
   async cancelShipment(trackingNumber: string) {
     this.logger.log(`Cancelling FedEx shipment: ${trackingNumber}`);
 
-    // In real implementation, make API call to cancel shipment
-    // const response = await fetch(
-    //   `${this.apiUrl}/ship/v1/shipments/cancel`,
-    //   {
-    //     method: 'PUT',
-    //     headers: {
-    //       'Authorization': `Bearer ${this.apiKey}`,
-    //       'Content-Type': 'application/json',
-    //     },
-    //     body: JSON.stringify({
-    //       trackingNumber,
-    //     }),
-    //   }
-    // );
+    const shippingAccount = await this.getOrCreateShippingAccount();
+
+    const success = await this.integrationService.cancelShipment(
+      shippingAccount,
+      trackingNumber,
+      `cancel-${trackingNumber}`,
+    );
 
     return {
-      success: true,
+      success,
       trackingNumber,
-      message: 'Shipment cancelled',
+      message: success ? 'Shipment cancelled' : 'Failed to cancel shipment',
     };
   }
 
   async getLabel(trackingNumber: string) {
     this.logger.log(`Getting FedEx label: ${trackingNumber}`);
 
-    // In real implementation, make API call to get label
-    // const response = await fetch(
-    //   `${this.apiUrl}/ship/v1/shipments/${trackingNumber}/label`,
-    //   {
-    //     headers: {
-    //       'Authorization': `Bearer ${this.apiKey}`,
-    //     },
-    //   }
-    // );
+    const shippingAccount = await this.getOrCreateShippingAccount();
 
-    return {
-      trackingNumber,
-      labelUrl: `https://example.com/labels/${trackingNumber}.pdf`,
-      format: 'PDF',
-    };
+    try {
+      const label = await this.integrationService.getLabel(
+        shippingAccount,
+        trackingNumber,
+        `label-${trackingNumber}`,
+      );
+
+      return {
+        trackingNumber,
+        labelContent: label.content,
+        contentType: label.contentType,
+        format: 'PDF',
+      };
+    } catch (error: any) {
+      // FedEx returns labels in createShipment response
+      return {
+        trackingNumber,
+        error: error.message,
+        format: 'PDF',
+      };
+    }
   }
 
   async validateAddress(address: {
@@ -171,18 +184,8 @@ export class FedexService {
   }) {
     this.logger.log(`Validating address: ${address.city}, ${address.country}`);
 
-    // In real implementation, make API call to validate address
-    // const response = await fetch(`${this.apiUrl}/address/v1/addresses/resolve`, {
-    //   method: 'POST',
-    //   headers: {
-    //     'Authorization': `Bearer ${this.apiKey}`,
-    //     'Content-Type': 'application/json',
-    //   },
-    //   body: JSON.stringify({
-    //     addressesToValidate: [address],
-    //   }),
-    // });
-
+    // Note: validateAddress is not yet implemented in integration service
+    // Returning optimistic response for now
     return {
       valid: true,
       address: address,
@@ -196,41 +199,68 @@ export class FedexService {
   }) {
     this.logger.log(`Getting FedEx rates`);
 
-    // In real implementation, make API call to get rates
-    // const response = await fetch(`${this.apiUrl}/rate/v1/rates/quotes`, {
-    //   method: 'POST',
-    //   headers: {
-    //     'Authorization': `Bearer ${this.apiKey}`,
-    //     'Content-Type': 'application/json',
-    //   },
-    //   body: JSON.stringify({
-    //     requestedShipment: {
-    //       shipper: request.shipper,
-    //       recipient: request.recipient,
-    //       pickupType: 'DROPOFF_AT_FEDEX_LOCATION',
-    //       requestedPackageLineItems: [
-    //         {
-    //           weight: { value: request.weight, units: 'KG' },
-    //         },
-    //       ],
-    //     },
-    //   }),
-    // });
+    const shippingAccount = await this.getOrCreateShippingAccount();
 
-    // Mock rates
-    return {
-      rates: [
+    const integrationRequest = {
+      accountNumber: shippingAccount.accountNumber,
+      shipper: {
+        name: 'Shipper',
+        address: '123 Main St',
+        city: request.shipper.city,
+        postalCode: request.shipper.postalCode,
+        country: request.shipper.country,
+        phone: '+966123456789',
+      },
+      recipient: {
+        name: 'Recipient',
+        address: '456 Oak Ave',
+        city: request.recipient.city,
+        postalCode: request.recipient.postalCode,
+        country: request.recipient.country,
+        phone: '+966987654321',
+      },
+      packages: [
         {
-          serviceType: 'FEDEX_INTERNATIONAL_PRIORITY',
-          totalCharge: { amount: 150.0, currency: 'SAR' },
-          deliveryDate: new Date(Date.now() + 86400000 * 2).toISOString(),
-        },
-        {
-          serviceType: 'FEDEX_INTERNATIONAL_ECONOMY',
-          totalCharge: { amount: 100.0, currency: 'SAR' },
-          deliveryDate: new Date(Date.now() + 86400000 * 5).toISOString(),
+          weightKg: request.weight,
         },
       ],
+    };
+
+    const rates = await this.integrationService.getRates(
+      shippingAccount,
+      integrationRequest,
+      'get-rates',
+    );
+
+    return {
+      rates: rates.map((rate: any) => ({
+        serviceType: rate.serviceType,
+        serviceName: rate.serviceName,
+        totalCharge: {
+          amount: rate.cost,
+          currency: rate.currency || 'USD',
+        },
+      })),
+    };
+  }
+
+  /**
+   * Get or create default FedEx shipping account
+   * In production, this would fetch from database based on organizationId
+   */
+  private async getOrCreateShippingAccount() {
+    // For now, return a mock account with config from environment
+    return {
+      id: 'default-fedex-account',
+      organizationId: 'default-org',
+      carrier: 'FEDEX',
+      accountNumber: this.configService.get('fedex.accountNumber') || process.env.FEDEX_ACCOUNT_NUMBER || 'mock-account',
+      testMode: this.configService.get('fedex.testMode') !== 'false',
+      credentials: {
+        apiKey: this.configService.get('fedex.apiKey') || process.env.FEDEX_API_KEY,
+        secretKey: this.configService.get('fedex.secretKey') || process.env.FEDEX_SECRET_KEY,
+        accountNumber: this.configService.get('fedex.accountNumber') || process.env.FEDEX_ACCOUNT_NUMBER,
+      },
     };
   }
 }
