@@ -135,7 +135,28 @@ export class FedExIntegrationService {
   /**
    * Create shipment with FedEx
    * 
-   * Calls real FedEx API to create shipment and return tracking number + label
+   * Creates a new shipment with FedEx and returns tracking information and label.
+   * Supports both domestic and international shipments.
+   * 
+   * @param shippingAccount - The shipping account configuration with credentials
+   * @param request - Shipment details including shipper, recipient, and packages
+   * @param correlationId - Optional correlation ID for request tracing
+   * @returns Promise resolving to shipment response with tracking number and label
+   * @throws {FedExValidationError} If request validation fails
+   * @throws {FedExAuthError} If authentication fails
+   * @throws {FedExError} For other FedEx API errors
+   * 
+   * @example
+   * ```typescript
+   * const result = await service.createShipment(account, {
+   *   accountNumber: '123456789',
+   *   testMode: false,
+   *   shipper: { name: 'John Doe', address: '123 Main St', ... },
+   *   recipient: { name: 'Jane Smith', address: '456 Oak Ave', ... },
+   *   packages: [{ weightKg: 5.0, lengthCm: 30, widthCm: 20, heightCm: 15 }],
+   * });
+   * console.log('Tracking:', result.trackingNumber);
+   * ```
    */
   async createShipment(
     shippingAccount: any,
@@ -181,7 +202,22 @@ export class FedExIntegrationService {
   /**
    * Get tracking information
    * 
-   * Calls real FedEx tracking API
+   * Retrieves current tracking status and event history for a shipment.
+   * 
+   * @param shippingAccount - The shipping account configuration
+   * @param trackingNumber - FedEx tracking number (12-22 digits)
+   * @param correlationId - Optional correlation ID for request tracing
+   * @returns Promise resolving to tracking information with status and events
+   * @throws {FedExTrackingNotFoundError} If tracking number is not found
+   * @throws {FedExValidationError} If tracking number format is invalid
+   * @throws {FedExError} For other FedEx API errors
+   * 
+   * @example
+   * ```typescript
+   * const tracking = await service.getTracking(account, '794608491820');
+   * console.log('Status:', tracking.status);
+   * console.log('Events:', tracking.events);
+   * ```
    */
   async getTracking(
     shippingAccount: any,
@@ -236,8 +272,24 @@ export class FedExIntegrationService {
   /**
    * Get shipment label
    * 
-   * Note: FedEx returns label in createShipment response.
-   * This method returns mock label for testing or throws error.
+   * **Note**: FedEx returns labels in the createShipment response.
+   * This method is provided for API consistency but will throw an error
+   * in production mode. Use the label from createShipment instead.
+   * 
+   * In test mode, returns a mock PDF label for testing purposes.
+   * 
+   * @param shippingAccount - The shipping account configuration
+   * @param carrierShipmentId - FedEx shipment ID or tracking number
+   * @param correlationId - Optional correlation ID for request tracing
+   * @returns Promise resolving to label content and content type (test mode only)
+   * @throws {Error} In live mode - labels must be obtained from createShipment
+   * 
+   * @example
+   * ```typescript
+   * // Get label from createShipment instead:
+   * const shipment = await service.createShipment(account, request);
+   * const labelPDF = shipment.label.content;
+   * ```
    */
   async getLabel(
     shippingAccount: any,
@@ -262,7 +314,24 @@ export class FedExIntegrationService {
   }
 
   /**
-   * Cancel shipment (optional)
+   * Cancel shipment
+   * 
+   * Cancels a FedEx shipment before it has been picked up.
+   * Shipments can only be cancelled before the pickup date/time.
+   * 
+   * @param shippingAccount - The shipping account configuration
+   * @param trackingNumber - FedEx tracking number to cancel
+   * @param correlationId - Optional correlation ID for request tracing
+   * @returns Promise resolving to true if cancelled successfully, false otherwise
+   * @throws {FedExError} If cancellation fails or shipment cannot be cancelled
+   * 
+   * @example
+   * ```typescript
+   * const cancelled = await service.cancelShipment(account, '794608491820');
+   * if (cancelled) {
+   *   console.log('Shipment cancelled successfully');
+   * }
+   * ```
    */
   async cancelShipment(
     shippingAccount: any,
@@ -304,7 +373,30 @@ export class FedExIntegrationService {
   }
 
   /**
-   * Get rate quotes (optional but useful)
+   * Get rate quotes
+   * 
+   * Retrieves shipping rates for different FedEx service types.
+   * Returns rates for all available services between origin and destination.
+   * 
+   * @param shippingAccount - The shipping account configuration
+   * @param request - Rate quote request with origin, destination, and package details
+   * @param correlationId - Optional correlation ID for request tracing
+   * @returns Promise resolving to array of rate options with service type and cost
+   * @throws {FedExValidationError} If request validation fails
+   * @throws {FedExError} For other FedEx API errors
+   * 
+   * @example
+   * ```typescript
+   * const rates = await service.getRates(account, {
+   *   accountNumber: '123456789',
+   *   shipper: { city: 'Chicago', postalCode: '60601', country: 'US', ... },
+   *   recipient: { city: 'New York', postalCode: '10001', country: 'US', ... },
+   *   packages: [{ weightKg: 5.0 }],
+   * });
+   * rates.forEach(rate => {
+   *   console.log(`${rate.serviceName}: $${rate.cost}`);
+   * });
+   * ```
    */
   async getRates(
     shippingAccount: any,
@@ -386,7 +478,33 @@ export class FedExIntegrationService {
   /**
    * Validate address with FedEx
    * 
-   * Calls FedEx Address Validation API to verify and standardize addresses
+   * Validates and standardizes an address using FedEx Address Validation API.
+   * Returns validated address with corrections and classification (business/residential).
+   * 
+   * @param shippingAccount - The shipping account configuration
+   * @param address - Address to validate with street, city, postal code, and country
+   * @param correlationId - Optional correlation ID for request tracing
+   * @returns Promise resolving to validation result with resolved address and classification
+   * @throws {FedExValidationError} If address format is invalid
+   * @throws {FedExError} For other FedEx API errors
+   * 
+   * @example
+   * ```typescript
+   * const result = await service.validateAddress(account, {
+   *   street: '123 Main St',
+   *   city: 'Chicago',
+   *   state: 'IL',
+   *   postalCode: '60601',
+   *   country: 'US',
+   * });
+   * 
+   * if (result.valid) {
+   *   console.log('Valid address:', result.resolvedAddress);
+   *   console.log('Type:', result.classification); // 'RESIDENTIAL' or 'BUSINESS'
+   * } else {
+   *   console.log('Warnings:', result.warnings);
+   * }
+   * ```
    */
   async validateAddress(
     shippingAccount: any,
