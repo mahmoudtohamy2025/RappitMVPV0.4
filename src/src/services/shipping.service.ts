@@ -547,13 +547,14 @@ export class ShippingService {
     carrierType: ShippingCarrier,
     order: any,
     options: CreateShipmentOptions,
+    correlationId?: string,
   ): Promise<any> {
     const request = this.buildCarrierRequest(shippingAccount, order, options);
 
     if (carrierType === 'DHL') {
-      return this.dhlService.createShipment(shippingAccount, request);
+      return this.dhlService.createShipment(shippingAccount, request, correlationId);
     } else if (carrierType === 'FEDEX') {
-      return this.fedexService.createShipment(shippingAccount, request);
+      return this.fedexService.createShipment(shippingAccount, request, correlationId);
     }
 
     throw new Error(`Unknown carrier: ${carrierType}`);
@@ -568,11 +569,12 @@ export class ShippingService {
     shippingAccount: any,
     carrierType: ShippingCarrier,
     trackingNumber: string,
+    correlationId?: string,
   ): Promise<CarrierTrackingResponse> {
     if (carrierType === 'DHL') {
-      return this.dhlService.getTracking(shippingAccount, trackingNumber);
+      return this.dhlService.getTracking(shippingAccount, trackingNumber, correlationId);
     } else if (carrierType === 'FEDEX') {
-      return this.fedexService.getTracking(shippingAccount, trackingNumber);
+      return this.fedexService.getTracking(shippingAccount, trackingNumber, correlationId);
     }
 
     throw new Error(`Unknown carrier: ${carrierType}`);
