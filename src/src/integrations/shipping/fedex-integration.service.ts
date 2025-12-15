@@ -13,6 +13,8 @@ import {
   FedExRateQuoteRequest,
   FedExRateQuoteResponse,
   FedExServiceType,
+  FedExValidateAddressRequest,
+  FedExValidateAddressResponse,
 } from './fedex.types';
 import {
   FEDEX_API_CONFIG,
@@ -379,6 +381,157 @@ export class FedExIntegrationService {
 
       throw error;
     }
+  }
+
+  /**
+   * Validate address with FedEx
+   * 
+   * Calls FedEx Address Validation API to verify and standardize addresses
+   */
+  async validateAddress(
+    shippingAccount: any,
+    address: {
+      street: string;
+      city: string;
+      state?: string;
+      postalCode: string;
+      country: string;
+    },
+    correlationId?: string,
+  ): Promise<{
+    valid: boolean;
+    classification?: 'BUSINESS' | 'RESIDENTIAL' | 'UNKNOWN';
+    resolvedAddress?: {
+      street: string;
+      city: string;
+      state?: string;
+      postalCode: string;
+      country: string;
+    };
+    warnings?: string[];
+  }> {
+    this.logger.log('Validating address with FedEx', {
+      correlationId,
+      city: address.city,
+      country: address.country,
+    });
+
+    try {
+      // Use mock implementation in test mode
+      if (shippingAccount.testMode && process.env.NODE_ENV !== 'production') {
+        return this.mockValidateAddress(address);
+      }
+
+      // Build validation request
+      const payload: any = {
+        addressesToValidate: [
+          {
+            address: {
+              streetLines: [address.street],
+              city: address.city,
+              stateOrProvinceCode: address.state,
+              postalCode: address.postalCode,
+              countryCode: address.country,
+            },
+          },
+        ],
+      };
+
+      // Get client and make API call
+      const client = this.getClient(shippingAccount);
+      const response = await client.post<any>(
+        FEDEX_API_CONFIG.ENDPOINTS.VALIDATE_ADDRESS,
+        payload,
+        correlationId,
+      );
+
+      // Parse response
+      return this.parseValidationResponse(response);
+    } catch (error: any) {
+      this.logger.error('Failed to validate address', error, {
+        correlationId,
+        error: error.message,
+      });
+
+      throw error;
+    }
+  }
+
+  /**
+   * Mock address validation for test mode
+   */
+  private mockValidateAddress(address: {
+    street: string;
+    city: string;
+    state?: string;
+    postalCode: string;
+    country: string;
+  }): {
+    valid: boolean;
+    classification: 'BUSINESS' | 'RESIDENTIAL' | 'UNKNOWN';
+    resolvedAddress: any;
+    warnings?: string[];
+  } {
+    this.logger.log('Mock address validation', { city: address.city });
+
+    // Simple validation rules for mock
+    const hasPostalCode = address.postalCode && address.postalCode.length >= 3;
+    const hasCity = address.city && address.city.length >= 2;
+    const hasStreet = address.street && address.street.length >= 5;
+
+    const valid = hasPostalCode && hasCity && hasStreet;
+
+    return {
+      valid,
+      classification: 'RESIDENTIAL',
+      resolvedAddress: {
+        street: address.street,
+        city: address.city,
+        state: address.state,
+        postalCode: address.postalCode,
+        country: address.country,
+      },
+      warnings: valid ? undefined : ['Address may be incomplete'],
+    };
+  }
+
+  /**
+   * Parse address validation response
+   */
+  private parseValidationResponse(response: any): {
+    valid: boolean;
+    classification?: 'BUSINESS' | 'RESIDENTIAL' | 'UNKNOWN';
+    resolvedAddress?: any;
+    warnings?: string[];
+  } {
+    const resolved = response.output.resolvedAddresses?.[0];
+
+    if (!resolved) {
+      return {
+        valid: false,
+        warnings: ['Address could not be validated'],
+      };
+    }
+
+    const warnings: string[] = [];
+    if (response.output.alerts) {
+      response.output.alerts.forEach((alert: any) => {
+        warnings.push(alert.message);
+      });
+    }
+
+    return {
+      valid: resolved.resolved,
+      classification: resolved.classification,
+      resolvedAddress: {
+        street: resolved.address.streetLines.join(', '),
+        city: resolved.address.city,
+        state: resolved.address.stateOrProvinceCode,
+        postalCode: resolved.address.postalCode,
+        country: resolved.address.countryCode,
+      },
+      warnings: warnings.length > 0 ? warnings : undefined,
+    };
   }
 
   // ============================================================================

@@ -330,6 +330,48 @@ export interface FedExCancelShipmentResponse {
 }
 
 // ============================================================================
+// Address Validation Types
+// ============================================================================
+
+export interface FedExValidateAddressRequest {
+  addressesToValidate: Array<{
+    address: {
+      streetLines: string[];
+      city: string;
+      stateOrProvinceCode?: string;
+      postalCode: string;
+      countryCode: string;
+    };
+  }>;
+}
+
+export interface FedExValidateAddressResponse {
+  transactionId: string;
+  output: {
+    resolvedAddresses: Array<{
+      classification: string; // 'BUSINESS', 'RESIDENTIAL', 'UNKNOWN'
+      resolved: boolean;
+      address: {
+        streetLines: string[];
+        city: string;
+        stateOrProvinceCode?: string;
+        postalCode: string;
+        countryCode: string;
+      };
+      attributes?: {
+        dpv?: string;
+        residential?: boolean;
+      };
+    }>;
+    alerts?: Array<{
+      code: string;
+      message: string;
+      alertType: string;
+    }>;
+  };
+}
+
+// ============================================================================
 // Error Types
 // ============================================================================
 

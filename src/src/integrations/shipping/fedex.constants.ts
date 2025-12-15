@@ -118,6 +118,7 @@ export const FEDEX_API_CONFIG = {
     TRACK: '/track/v1/trackingnumbers',
     CANCEL_SHIPMENT: '/ship/v1/shipments/cancel',
     RATE_QUOTE: '/rate/v1/rates/quotes',
+    VALIDATE_ADDRESS: '/address/v1/addresses/resolve',
   },
 };
 
