@@ -250,6 +250,12 @@ The access model is designed for multi-tenancy, allowing a single user to belong
 
 The system is designed with a plugin-like architecture for integrations.
 
+### 9.0 Integration Security Standard (Architectural Decision)
+**Constraint**: All third-party integrations MUST use **OAuth 2.0 (or 1.0a)** for authentication where supported by the provider.
+-   **API Keys**: Legacy "copy-paste API Key" methods are strictly prohibited unless the provider offers NO other option.
+-   **Token Storage**: Tokens must be encrypted at rest using `AES-256-GCM` via a centralized `EncryptionService`.
+-   **Lifecycle**: Automated token refresh and revocation handling is mandatory.
+
 ### 9.1 Shopify
 -   **Type**: Sales Channel.
 -   **Status**: Implemented (`ShopifyService`, `ShopifyController`).

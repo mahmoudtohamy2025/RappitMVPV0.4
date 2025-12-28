@@ -6,6 +6,16 @@ This document details the critical path to production, specifically focusing on 
 
 ---
 
+## 0. Platform Rule: OAuth First
+
+**Architectural Standard**: All third-party integrations (current and future) MUST use **OAuth-based authentication** where supported by the provider.
+
+-   **Prohibited**: Copy-pasting API Keys, Basic Auth (unless OAuth is impossible).
+-   **Mandatory**: Automated Token Refresh, Encryption at Rest, Scoped Permissions.
+-   **Process**: Any new integration request must pass an "OAuth Feasibility Check" before code is written.
+
+---
+
 ## 1. OAuth-Based Integrations (CRITICAL)
 
 **Goal**: Replace mock connectors with real, secure OAuth flows for Shopify, WooCommerce, FedEx, and DHL.
